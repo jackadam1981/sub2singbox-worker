@@ -1,0 +1,13 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "sub2singbox-worker",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-04-11",
+  "observability": {
+    "enabled": true
+  },
+  "vars": {
+    "DEFAULT_DEVICE": "openwrt",
+    "DEFAULT_VERSION": "1.12.0"
+  }
+}
