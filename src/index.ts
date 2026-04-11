@@ -1,5 +1,13 @@
 import { tryDecodeBase64 } from "./lib/base64";
 import {
+  getCacheDebugInfo,
+  getCachedRemoteText,
+  getRemoteResourceCacheKey,
+  getResultCacheKey,
+  readResultCache,
+  writeResultCache,
+} from "./lib/cache";
+import {
   buildClashConfigDocument,
   buildClashProviderDocument,
   toClashProxy,
@@ -39,6 +47,15 @@ function applyCorsHeaders(headers: Headers, env: WorkerEnv): void {
   }
 }
 
+function buildTextHeaders(
+  env: WorkerEnv,
+  headersInit: Record<string, string>,
+): Headers {
+  const headers = new Headers(headersInit);
+  applyCorsHeaders(headers, env);
+  return headers;
+}
+
 function splitSources(value: string | null | undefined): string[] {
   if (!value) {
     return [];
@@ -64,7 +81,16 @@ function isAuthorized(url: URL, request: Request, env: WorkerEnv): boolean {
   return candidates.some((candidate) => candidate === env.ACCESS_PASSWORD);
 }
 
-async function resolvePayloads(requestUrl: URL, env: WorkerEnv): Promise<string[]> {
+function shouldBypassCache(url: URL): boolean {
+  const cache = url.searchParams.get("cache");
+  const refresh = url.searchParams.get("refresh");
+  return cache === "0" || cache === "false" || refresh === "1" || refresh === "true";
+}
+
+async function resolvePayloads(
+  requestUrl: URL,
+  env: WorkerEnv,
+): Promise<{ payloads: string[]; cacheState: string }> {
   const rawInput = requestUrl.searchParams.get("raw");
   const rawIsBase64 = requestUrl.searchParams.get("raw_base64");
   if (rawInput) {
@@ -73,10 +99,10 @@ async function resolvePayloads(requestUrl: URL, env: WorkerEnv): Promise<string[
       if (!decoded) {
         throw new Error("raw_base64=1 但 raw 不是有效 base64");
       }
-      return [decoded];
+      return { payloads: [decoded], cacheState: "raw" };
     }
 
-    return [rawInput];
+    return { payloads: [rawInput], cacheState: "raw" };
   }
 
   const sourceUrls = splitSources(
@@ -87,13 +113,28 @@ async function resolvePayloads(requestUrl: URL, env: WorkerEnv): Promise<string[
   }
 
   const userAgent = requestUrl.searchParams.get("ua") ?? env.DEFAULT_USER_AGENT ?? "sing-box";
-  return Promise.all(sourceUrls.map((url) => fetchText(url, userAgent)));
+  const bypassFreshCache = shouldBypassCache(requestUrl);
+  const results = await Promise.all(
+    sourceUrls.map(async (sourceUrl) => {
+      const cached = await getCachedRemoteText(env, {
+        key: getRemoteResourceCacheKey("subscription", sourceUrl),
+        kind: "subscription",
+        bypassFreshCache,
+        loader: () => fetchText(sourceUrl, userAgent),
+      });
+      return cached;
+    }),
+  );
+  return {
+    payloads: results.map((result) => result.value),
+    cacheState: results.map((result) => result.source).join(","),
+  };
 }
 
 async function resolveTemplate(
   requestUrl: URL,
   env: WorkerEnv,
-): Promise<string | undefined> {
+): Promise<{ template?: string; cacheState: string }> {
   const templateRaw = requestUrl.searchParams.get("template_raw");
   const templateRawBase64 = requestUrl.searchParams.get("template_raw_base64");
   if (templateRaw) {
@@ -102,20 +143,26 @@ async function resolveTemplate(
       if (!decoded) {
         throw new Error("template_raw_base64=1 但 template_raw 不是有效 base64");
       }
-      return decoded;
+      return { template: decoded, cacheState: "raw" };
     }
 
-    return templateRaw;
+    return { template: templateRaw, cacheState: "raw" };
   }
 
   const templateUrl =
     requestUrl.searchParams.get("template_url") ?? env.DEFAULT_TEMPLATE_URL ?? undefined;
   if (!templateUrl) {
-    return undefined;
+    return { template: undefined, cacheState: "builtin" };
   }
 
   const userAgent = requestUrl.searchParams.get("ua") ?? env.DEFAULT_USER_AGENT ?? "sing-box";
-  return fetchText(templateUrl, userAgent);
+  const cached = await getCachedRemoteText(env, {
+    key: getRemoteResourceCacheKey("template", templateUrl),
+    kind: "template",
+    bypassFreshCache: true,
+    loader: () => fetchText(templateUrl, userAgent),
+  });
+  return { template: cached.value, cacheState: cached.source };
 }
 
 function resolveOutputFormat(requestUrl: URL): OutputFormat {
@@ -157,8 +204,8 @@ async function handleConvert(request: Request, env: WorkerEnv): Promise<Response
   const requestedVersion = url.searchParams.get("version") ?? env.DEFAULT_VERSION ?? "1.12.0";
   const profile = resolveProfile(requestedDevice, requestedVersion);
 
-  const payloads = await resolvePayloads(url, env);
-  const parsedOutbounds = payloads.flatMap((payload) =>
+  const payloadResult = await resolvePayloads(url, env);
+  const parsedOutbounds = payloadResult.payloads.flatMap((payload) =>
     parseSubscriptionPayload(payload, profile.channel),
   );
 
@@ -169,6 +216,66 @@ async function handleConvert(request: Request, env: WorkerEnv): Promise<Response
   );
 
   const outputFormat = resolveOutputFormat(url);
+  const hasRemoteTemplate =
+    url.searchParams.has("template_url") ||
+    url.searchParams.has("template_raw") ||
+    Boolean(env.DEFAULT_TEMPLATE_URL);
+  const resultCacheEnabled =
+    (outputFormat === "sing-box" && !hasRemoteTemplate) ||
+    outputFormat === "clash" ||
+    outputFormat === "clash-provider";
+  const bypassCache = shouldBypassCache(url);
+  const resultCacheKey =
+    resultCacheEnabled && !bypassCache
+      ? getResultCacheKey(request, outputFormat, hasRemoteTemplate ? "remote" : "builtin")
+      : null;
+  const resultCacheState =
+    hasRemoteTemplate && outputFormat === "sing-box"
+      ? "bypass"
+      : resultCacheKey
+        ? "miss"
+        : "bypass";
+  const subscriptionCacheState = url.searchParams.has("url")
+    ? bypassCache
+      ? "bypass"
+      : "network-or-cache"
+    : "raw";
+  const templateCacheState = hasRemoteTemplate ? "stale-only" : "builtin";
+
+  if (resultCacheKey) {
+    const cachedBody = await readResultCache(env, resultCacheKey);
+    if (cachedBody) {
+      if (outputFormat === "sing-box") {
+        return new Response(cachedBody, {
+          headers: buildTextHeaders(env, {
+            "content-type": "application/json; charset=utf-8",
+            "cache-control": "no-store",
+            "x-profile-id": profile.id,
+            "x-node-count": String(filteredOutbounds.length),
+            "x-template-mode": hasRemoteTemplate ? "remote" : "builtin",
+            "x-output-format": outputFormat,
+            "x-cache-result": "hit",
+            "x-cache-subscription": subscriptionCacheState,
+            "x-cache-template": templateCacheState,
+          }),
+        });
+      }
+
+      return new Response(cachedBody, {
+        headers: buildTextHeaders(env, {
+          "content-type": "text/yaml; charset=utf-8",
+          "cache-control": "no-store",
+          "x-profile-id": profile.id,
+          "x-node-count": String(filteredOutbounds.length),
+          "x-output-format": outputFormat,
+          "x-cache-result": "hit",
+          "x-cache-subscription": subscriptionCacheState,
+          "x-cache-template": templateCacheState,
+        }),
+      });
+    }
+  }
+
   const supportedClashNodes = filteredOutbounds.filter((outbound) => toClashProxy(outbound) !== null);
 
   if (outputFormat !== "sing-box") {
@@ -185,39 +292,50 @@ async function handleConvert(request: Request, env: WorkerEnv): Promise<Response
         ? buildClashProviderDocument(filteredOutbounds)
         : buildClashConfigDocument(filteredOutbounds);
 
+    if (resultCacheKey && !hasRemoteTemplate) {
+      await writeResultCache(env, resultCacheKey, body);
+    }
+
     return new Response(body, {
-      headers: (() => {
-        const headers = new Headers({
+      headers: buildTextHeaders(env, {
         "content-type": "text/yaml; charset=utf-8",
         "cache-control": "no-store",
         "x-profile-id": profile.id,
         "x-node-count": String(filteredOutbounds.length),
         "x-output-format": outputFormat,
         "x-supported-node-count": String(supportedClashNodes.length),
-        });
-        applyCorsHeaders(headers, env);
-        return headers;
-      })(),
+        "x-cache-result": resultCacheState,
+        "x-cache-subscription": subscriptionCacheState,
+        "x-cache-template": templateCacheState,
+      }),
     });
   }
 
-  const template = await resolveTemplate(url, env);
-  const config = template
+  const templateResult = await resolveTemplate(url, env);
+  const config = templateResult.template
     ? renderTemplate(
-        template,
+        templateResult.template,
         buildRenderContext(profile, filteredOutbounds),
       )
     : buildSingBoxConfig(profile, filteredOutbounds);
+  const body = JSON.stringify(config, null, 2);
 
-  return new Response(JSON.stringify(config, null, 2), {
-    headers: {
+  if (resultCacheKey && !hasRemoteTemplate) {
+    await writeResultCache(env, resultCacheKey, body);
+  }
+
+  return new Response(body, {
+    headers: buildTextHeaders(env, {
       "content-type": "application/json; charset=utf-8",
       "cache-control": "no-store",
       "x-profile-id": profile.id,
       "x-node-count": String(filteredOutbounds.length),
-      "x-template-mode": template ? "remote" : "builtin",
+      "x-template-mode": templateResult.template ? "remote" : "builtin",
       "x-output-format": outputFormat,
-    },
+      "x-cache-result": resultCacheState,
+      "x-cache-subscription": payloadResult.cacheState,
+      "x-cache-template": templateResult.cacheState,
+    }),
   });
 }
 
@@ -238,6 +356,11 @@ function handleProfiles(env: WorkerEnv): Response {
           "sing-box": "输出 sing-box JSON 配置",
           clash: "输出可直接导入 Clash / Clash.Meta 的完整 YAML 配置",
           "clash-provider": "输出仅含 proxies 的 Clash provider YAML",
+        },
+        cache: {
+          subscription: "默认缓存 10 分钟，失败时回退 24 小时旧内容",
+          template: "默认不做 fresh 缓存，失败时可回退最近 1 小时旧模板",
+          result: "远程模板默认不缓存结果；其他输出默认缓存 5 分钟",
         },
       },
     },
@@ -272,6 +395,8 @@ export default {
           return handleRoot(env);
         case "/health":
           return jsonResponse({ ok: true }, env);
+        case "/debug/cache-policy":
+          return jsonResponse({ ok: true, policy: getCacheDebugInfo(env) }, env);
         case "/profiles":
           return handleProfiles(env);
         case "/convert":

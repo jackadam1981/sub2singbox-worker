@@ -26,6 +26,21 @@ export interface WorkerEnv {
   DEFAULT_USER_AGENT?: string;
   DEFAULT_TEMPLATE_URL?: string;
   CORS_ORIGIN?: string;
+  SUBSCRIPTION_CACHE_TTL?: string;
+  SUBSCRIPTION_STALE_TTL?: string;
+  TEMPLATE_CACHE_TTL?: string;
+  TEMPLATE_STALE_TTL?: string;
+  RESULT_CACHE_TTL?: string;
+  CACHE_KV?: {
+    get(key: string): Promise<string | null>;
+    put(
+      key: string,
+      value: string,
+      options?: {
+        expirationTtl?: number;
+      },
+    ): Promise<void>;
+  };
 }
 
 export type SingBoxOutbound = JsonObject & {

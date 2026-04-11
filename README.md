@@ -137,6 +137,8 @@ npm run deploy
 - `format`: `sing-box | clash | clash-provider`
 - `include`: 只保留匹配此正则的节点 tag
 - `exclude`: 排除匹配此正则的节点 tag
+- `cache=0`: 跳过 fresh 缓存
+- `refresh=1`: 强制回源，并允许在失败时回退 stale 缓存
 - `ua`: 拉取订阅时使用的 User-Agent
 - `password` / `token`: 若配置了 `ACCESS_PASSWORD`，需要携带
 
@@ -199,6 +201,53 @@ npm run deploy
 - `template_url` / `template_raw` 目前只对 `sing-box` 输出生效
 - `format=clash` 与 `format=clash-provider` 暂不支持自定义模板
 - 复杂 Clash `proxy-groups` 目前只做输入侧忽略，不做原样保留
+
+## 缓存策略
+
+当前 Worker 已支持基于 KV 的缓存层。
+
+### 默认策略
+
+- 原始订阅：
+  - fresh 缓存 `10 分钟`
+  - 失败时回退 `24 小时` 内旧内容
+- 远程模板：
+  - 默认不做 fresh 缓存
+  - 失败时允许回退 `1 小时` 内旧模板
+- 最终结果：
+  - `sing-box + 内建模板` / `clash` / `clash-provider` 默认缓存 `5 分钟`
+  - `sing-box + 远程模板` 默认**不缓存最终结果**
+
+### 可选环境变量
+
+除上文配置外，缓存层还支持：
+
+- `SUBSCRIPTION_CACHE_TTL`
+- `SUBSCRIPTION_STALE_TTL`
+- `TEMPLATE_CACHE_TTL`
+- `TEMPLATE_STALE_TTL`
+- `RESULT_CACHE_TTL`
+
+### 调试接口
+
+- `GET /debug/cache-policy`
+
+会返回当前缓存策略与 KV 是否启用。
+
+### KV 绑定
+
+如果要启用缓存，需要为 Worker 绑定一个 KV namespace：
+
+```jsonc
+{
+  "kv_namespaces": [
+    {
+      "binding": "CACHE_KV",
+      "id": "YOUR_KV_NAMESPACE_ID"
+    }
+  ]
+}
+```
 
 ## 远程模板占位符
 
