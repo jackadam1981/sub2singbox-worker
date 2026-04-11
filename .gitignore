@@ -1,4 +1,8 @@
 node_modules/
+.cursor/
 .wrangler/
 coverage/
 dist/
+pages-dist/
+.pages-bundle/
+.pages-tmp/

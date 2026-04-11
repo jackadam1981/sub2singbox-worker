@@ -1,4 +1,4 @@
-import { tryDecodeBase64 } from "./lib/base64";
+import { decodeRawSubscriptionBase64, tryDecodeBase64 } from "./lib/base64";
 import {
   builtinTemplateDetail,
   listBuiltinTemplateSummaries,
@@ -16,11 +16,7 @@ import {
   readResultCache,
   writeResultCache,
 } from "./lib/cache";
-import {
-  buildClashConfigDocument,
-  buildClashProviderDocument,
-  toClashProxy,
-} from "./lib/clash";
+import { buildClashConfigDocument, toClashProxy } from "./lib/clash";
 import { buildRenderContext, buildSingBoxConfig } from "./lib/config";
 import { AppError, toErrorResponseBody } from "./lib/errors";
 import { fetchText } from "./lib/http";
@@ -39,8 +35,15 @@ import type {
   SourceDebugEntry,
   WorkerEnv,
 } from "./lib/types";
+import consoleHtml from "../pages-static/console.html";
 
-type OutputFormat = "sing-box" | "clash" | "clash-provider";
+/** 与 `pages-static/console.html` 首屏标识一致；`GET /ui-version` 用于确认请求是否到达本 Worker。 */
+const CONSOLE_UI_VERSION = "v3";
+
+/** 未设置 Worker 变量 `DEFAULT_VERSION` 时的兜底（与 `wrangler.jsonc` vars 对齐）。 */
+const FALLBACK_DEFAULT_VERSION = "1.13.7";
+
+type OutputFormat = "sing-box" | "clash";
 
 function jsonResponse(body: unknown, env: WorkerEnv, status = 200): Response {
   const headers = new Headers({
@@ -142,7 +145,7 @@ async function resolvePayloads(
   const rawIsBase64 = requestUrl.searchParams.get("raw_base64");
   if (rawInput) {
     if (rawIsBase64 === "1" || rawIsBase64 === "true") {
-      const decoded = tryDecodeBase64(rawInput);
+      const decoded = decodeRawSubscriptionBase64(rawInput);
       if (!decoded) {
         throw new Error("raw_base64=1 但 raw 不是有效 base64");
       }
@@ -357,10 +360,6 @@ function resolveOutputFormat(requestUrl: URL): OutputFormat {
       return "sing-box";
     case "clash":
       return "clash";
-    case "clash-provider":
-    case "clash_provider":
-    case "provider":
-      return "clash-provider";
     default:
       throw new Error(`不支持的输出格式: ${rawFormat}`);
   }
@@ -380,7 +379,7 @@ function resolveTemplateRecommendation(url: URL):
   }
 
   const device = normalizeDevice(deviceParam ?? "openwrt");
-  const channel = getVersionChannel(versionParam ?? "1.12.0");
+  const channel = getVersionChannel(versionParam ?? FALLBACK_DEFAULT_VERSION);
   return {
     device,
     channel,
@@ -494,8 +493,23 @@ async function analyzeConversion(
   explain: ConversionExplain;
 }> {
   const url = new URL(request.url);
+  const outputFormat = resolveOutputFormat(url);
   const requestedDevice = url.searchParams.get("device") ?? env.DEFAULT_DEVICE ?? "openwrt";
-  const requestedVersion = url.searchParams.get("version") ?? env.DEFAULT_VERSION ?? "1.12.0";
+  const versionParam = url.searchParams.get("version");
+  const versionTrimmed = versionParam?.trim() ?? "";
+  if (outputFormat === "sing-box" && !versionTrimmed) {
+    throw new AppError({
+      stage: "profile",
+      code: "VERSION_REQUIRED",
+      status: 400,
+      message: "sing-box 输出必须提供 version 参数，请显式选择 sing-box 版本（不再使用服务端默认版本兜底）。",
+      detail: { device: requestedDevice, output_format: outputFormat },
+    });
+  }
+  const requestedVersion =
+    outputFormat === "sing-box"
+      ? versionTrimmed
+      : versionTrimmed || env.DEFAULT_VERSION || FALLBACK_DEFAULT_VERSION;
   let profile;
   try {
     profile = resolveProfile(requestedDevice, requestedVersion);
@@ -510,8 +524,6 @@ async function analyzeConversion(
       },
     });
   }
-
-  const outputFormat = resolveOutputFormat(url);
   const strictMode = isStrictSourceMode(url);
   const payloadResult = await resolvePayloads(url, env);
   const { debugEntries, parsedOutbounds } = buildSourceDebugEntries(
@@ -619,9 +631,7 @@ async function handleConvert(request: Request, env: WorkerEnv): Promise<Response
   } = analysis;
   const hasRemoteTemplate = summarizeTemplateMode(templateResult) === "remote";
   const resultCacheEnabled =
-    (outputFormat === "sing-box" && !hasRemoteTemplate) ||
-    outputFormat === "clash" ||
-    outputFormat === "clash-provider";
+    (outputFormat === "sing-box" && !hasRemoteTemplate) || outputFormat === "clash";
   const bypassCache = shouldBypassCache(url);
   const resultCacheKey =
     resultCacheEnabled && !bypassCache
@@ -697,10 +707,7 @@ async function handleConvert(request: Request, env: WorkerEnv): Promise<Response
       });
     }
 
-    const body =
-      outputFormat === "clash-provider"
-        ? buildClashProviderDocument(filteredOutbounds)
-        : buildClashConfigDocument(filteredOutbounds);
+    const body = buildClashConfigDocument(filteredOutbounds);
 
     if (resultCacheKey && !hasRemoteTemplate) {
       await writeResultCache(env, resultCacheKey, body);
@@ -773,7 +780,7 @@ async function handleConvert(request: Request, env: WorkerEnv): Promise<Response
 
 function handleProfiles(env: WorkerEnv): Response {
   const defaultDevice = env.DEFAULT_DEVICE ?? "openwrt";
-  const defaultVersion = env.DEFAULT_VERSION ?? "1.12.0";
+  const defaultVersion = env.DEFAULT_VERSION ?? FALLBACK_DEFAULT_VERSION;
   const defaultProfile = resolveProfile(defaultDevice, defaultVersion);
   const defaultRecommendation = getBuiltinTemplateRecommendation(
     defaultProfile.device,
@@ -800,7 +807,6 @@ function handleProfiles(env: WorkerEnv): Response {
         outputs: {
           "sing-box": "输出 sing-box JSON 配置",
           clash: "输出可直接导入 Clash / Clash.Meta 的完整 YAML 配置",
-          "clash-provider": "输出仅含 proxies 的 Clash provider YAML",
         },
         cache: {
           subscription: "默认缓存 10 分钟，失败时回退 24 小时旧内容",
@@ -966,10 +972,8 @@ async function handleExplain(request: Request, env: WorkerEnv): Promise<Response
           message: error instanceof Error ? error.message : "模板渲染失败",
         });
       }
-    } else if (analysis.outputFormat === "clash") {
-      rendered = buildClashConfigDocument(analysis.filteredOutbounds);
     } else {
-      rendered = buildClashProviderDocument(analysis.filteredOutbounds);
+      rendered = buildClashConfigDocument(analysis.filteredOutbounds);
     }
   }
 
@@ -983,17 +987,60 @@ async function handleExplain(request: Request, env: WorkerEnv): Promise<Response
   );
 }
 
-function handleRoot(env: WorkerEnv): Response {
+function handleServiceMeta(env: WorkerEnv): Response {
   return jsonResponse(
     {
       ok: true,
       service: "sub2singbox-worker",
-      endpoints: ["/health", "/profiles", "/templates", "/validate", "/explain", "/convert"],
+      console_ui: CONSOLE_UI_VERSION,
+      endpoints: [
+        "/",
+        "/info",
+        "/ui-version",
+        "/health",
+        "/profiles",
+        "/templates",
+        "/validate",
+        "/explain",
+        "/convert",
+      ],
+      note: "以 Cloudflare Pages 部署：GET / 为操作界面；程序化元数据请用 GET /info。",
       example:
-        "/convert?device=openwrt&version=1.12.0&url=https://example.com/sub.txt&template_url=https://example.com/template.json",
+        "/convert?device=openwrt&version=1.13.7&url=https://example.com/sub.txt&template_url=https://example.com/template.json",
     },
     env,
   );
+}
+
+function handleUiVersion(env: WorkerEnv): Response {
+  return jsonResponse(
+    {
+      ok: true,
+      console_ui: CONSOLE_UI_VERSION,
+      layout: "single-column",
+      source: "worker",
+    },
+    env,
+  );
+}
+
+/** Pages 上 `GET /`：返回与 `pages-static/console.html` 同步打包的 HTML（勿在 pages-dist 根目录留 `index.html` 以免抢路由）。 */
+function respondWebConsole(_request: Request, _env: WorkerEnv): Response {
+  const html = consoleHtml.includes("<body>")
+    ? consoleHtml.replace(
+        "<body>",
+        `<body style="display:block !important;margin:0;" data-sub2sb-worker="${CONSOLE_UI_VERSION}">`,
+      )
+    : consoleHtml;
+  return new Response(html, {
+    headers: {
+      "content-type": "text/html; charset=utf-8",
+      "cache-control": "no-store, no-cache, must-revalidate, max-age=0",
+      pragma: "no-cache",
+      expires: "0",
+      "x-sub2sb-console": CONSOLE_UI_VERSION,
+    },
+  });
 }
 
 export default {
@@ -1006,8 +1053,26 @@ export default {
 
     try {
       switch (url.pathname) {
-        case "/":
-          return handleRoot(env);
+        case "/": {
+          if (request.method !== "GET" && request.method !== "HEAD") {
+            return jsonResponse({ ok: false, error: "仅支持 GET / HEAD" }, env, 405);
+          }
+          return respondWebConsole(request, env);
+        }
+        case "/console.html": {
+          if (request.method !== "GET" && request.method !== "HEAD") {
+            return jsonResponse({ ok: false, error: "仅支持 GET / HEAD" }, env, 405);
+          }
+          const canonical = new URL(request.url);
+          canonical.pathname = "/";
+          canonical.search = "";
+          canonical.hash = "";
+          return Response.redirect(canonical.toString(), 302);
+        }
+        case "/info":
+          return handleServiceMeta(env);
+        case "/ui-version":
+          return handleUiVersion(env);
         case "/health":
           return jsonResponse({ ok: true }, env);
         case "/debug/cache-policy":
@@ -1025,6 +1090,9 @@ export default {
         default:
           if (url.pathname.startsWith("/templates/")) {
             return handleTemplateDetail(request, env);
+          }
+          if (env.ASSETS) {
+            return env.ASSETS.fetch(request);
           }
           return jsonResponse(
             {

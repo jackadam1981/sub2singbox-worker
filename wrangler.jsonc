@@ -1,13 +1,21 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
+  // ---------------------------------------------------------------------------
+  // 部署约束：本仓库只以 Cloudflare PAGES 为生产目标（pages-dist + pages deploy）。
+  // 本文件用于 wrangler bundle（dry-run --outdir）生成 pages-dist/_worker.js，不是独立 Workers 项目配置。
+  // 请勿把 `wrangler deploy`（无 Pages）当作默认上线命令；见 package.json `deploy` 与 README。
+  // ---------------------------------------------------------------------------
   "name": "sub2singbox-worker",
   "main": "src/index.ts",
+  "rules": [
+    { "type": "Text", "globs": ["**/*.html"], "fallthrough": true },
+  ],
   "compatibility_date": "2026-04-11",
   "observability": {
     "enabled": true
   },
   "vars": {
     "DEFAULT_DEVICE": "openwrt",
-    "DEFAULT_VERSION": "1.12.0"
+    "DEFAULT_VERSION": "1.13.7"
   }
 }

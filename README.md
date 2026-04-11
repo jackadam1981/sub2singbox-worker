@@ -1,6 +1,6 @@
 # sub2singbox-worker
 
-一个部署在 Cloudflare Workers 上的 sing-box 订阅转换 MVP。
+一个部署在 **Cloudflare Pages**（高级模式 `_worker.js` + 静态资源）上的 sing-box 订阅转换 MVP。**生产环境只走 Pages，不把独立 Workers 产品当作默认发布目标**（见下文「部署约束」）。
 
 这个仓库基于对以下项目的研读后整理出来：
 
@@ -9,7 +9,7 @@
 - `dzhuang/sing-box-converter`
 - `Toperlock/sing-box-subscribe`
 
-当前版本的目标不是一次性复刻它们全部能力，而是先落一个更适合 Workers 的最小可用版本：
+当前版本的目标不是一次性复刻它们全部能力，而是先落一个更适合 **Cloudflare Pages 上 Worker 运行时** 的最小可用版本：
 
 - 支持按目标设备区分模板：`ios` / `android` / `pc` / `openwrt`
 - 支持按 sing-box 版本区分模板：`legacy (1.10.0 / 1.11.7)`、`modern (1.12.0 / 1.13.7 / 1.14.0-alpha.10)`
@@ -30,7 +30,6 @@
 - 支持输出格式：
   - `sing-box` JSON
   - `clash` 完整 YAML 配置
-  - `clash-provider` 仅含 `proxies` 的 YAML
 - 支持远程模板：
   - `template_url`
   - `template_raw`
@@ -40,7 +39,7 @@
   - `builtin:default`
   - `builtin:manual`
   - `builtin:auto`
-- 暴露 Worker 接口：
+- 暴露 HTTP 接口（由 Pages 上的 `_worker.js` 处理）：
   - `/health`
   - `/profiles`
   - `/templates`
@@ -105,23 +104,61 @@ npm test
 npm run dev
 ```
 
-## Cloudflare 部署
+`npm run dev` 会先构建 `pages-dist`，再启动 `wrangler pages dev --live-reload`，并用 **chokidar** 监听 `src/`、`pages-static/` 等，保存后重新执行 `build:pages`。为避免断掉 wrangler 注入的 **`/cdn-cgi/live-reload` WebSocket**，默认**不再**在每次保存时整进程重启 wrangler，而是依赖其对 `pages-dist/_worker.js` 的监视做 **in-process 热重载**，由 live-reload 脚本自动刷新页面。若你本机仍不刷新，可设环境变量 **`PAGES_DEV_HARD_RESTART=1`** 恢复「每次保存重启 wrangler」。监听不稳定时可设 **`CHOKIDAR_USEPOLLING=1`**。若只需单次构建再启动（无监听），可用 `npm run dev:once`。
+
+## Cloudflare 部署（仅 Pages）
+
+### 部署约束（必须遵守）
+
+| 要做 | 不要做 |
+|------|--------|
+| 使用 **`npm run deploy`**（npm 会先自动执行脚本 **`predeploy`** → **`verify`**：`check` + `test`；通过后才是 `build:pages` 与 `wrangler pages deploy`） | 用 **`wrangler deploy`**（无 Pages）作为默认上线方式；或绕过 npm 直接 **`wrangler pages deploy`**（不会跑测试） |
+| 本地用 **`npm run dev`** / **`pages dev pages-dist`** 对齐线上 | 假设「Worker 项目」与「Pages 项目」控制台、变量、路由完全一致 |
+| 把 `wrangler.jsonc` 视为 **打包 `src` → `pages-dist/_worker.js` 的配置** | 把本仓库当成「只部署 workers.dev 的纯 Worker 模板」 |
+
+业务代码跑在 **Pages 挂载的 `_worker.js`** 里；文档里说的 Worker 均指这一形态，而非单独购买的 **Cloudflare Workers** 产品交付物。
+
+### 首次创建项目
+
+首次需创建 Pages 项目（只需一次）：
+
+```bash
+npx wrangler pages project create sub2singbox-worker
+```
+
+构建并上传 `pages-dist`（内含 `_worker.js` 与静态资源）。**`npm run deploy` 时 npm 会先跑 `predeploy`（即 `verify`：类型检查 + 单元测试），失败则整个命令中止、不会构建或上传。** 不要用 `npm run deploy --ignore-scripts`，那会跳过校验。
 
 ```bash
 npm run deploy
 ```
 
+若你只想本地确认流水线（不部署），可执行：
+
+```bash
+npm run verify && npm run build:pages
+```
+
+环境变量与密钥请在 **Cloudflare 控制台 → Workers & Pages → 本项目 → Settings → Variables** 中为 Production / Preview 分别配置（与独立 Worker 产品控制台不共用）。
+
 可选环境变量：
 
 - `ACCESS_PASSWORD`: 开启访问密码保护
 - `DEFAULT_DEVICE`: 默认设备，默认 `openwrt`
-- `DEFAULT_VERSION`: 默认版本，默认 `1.12.0`
+- `DEFAULT_VERSION`: 默认版本，默认 `1.13.7`
 - `DEFAULT_SUBSCRIPTION_URL`: 默认订阅地址
 - `DEFAULT_USER_AGENT`: 拉取订阅时使用的 UA
 - `DEFAULT_TEMPLATE_URL`: 默认远程模板地址
 - `CORS_ORIGIN`: 允许跨域的源
 
 ## API
+
+### `GET /`
+
+浏览器访问时为 **操作控制台**（静态页面）；自动化客户端请使用 `GET /info`。
+
+### `GET /info`
+
+返回服务元数据 JSON（接口列表、示例 URL 等），供脚本与订阅器集成。
 
 ### `GET /health`
 
@@ -184,7 +221,7 @@ npm run deploy
 查询参数：
 
 - `device`: `ios | android | pc | openwrt`
-- `version`: 如 `1.11.7`、`1.13.7`、`1.14.0-alpha.10`
+- `version`: 如 `1.11.7`、`1.13.7`、`1.14.0-alpha.10`。**sing-box 必须提供**；**`format=clash` 时可省略**（省略时按 `DEFAULT_VERSION` 做订阅解析通道，控制台生成链接也不会带此项）
 - `url`: 一个或多个订阅 URL，支持 `,` 或 `|` 分隔
 - `raw`: 直接传入订阅内容
 - `raw_base64=1`: 表示 `raw` 需要先做 base64 解码
@@ -192,7 +229,7 @@ npm run deploy
 - `template_raw`: 直接传入 JSON 模板内容
 - `template_raw_base64=1`: 表示 `template_raw` 需要先做 base64 解码
 - `template`: 内建模板选择，如 `builtin:default`
-- `format`: `sing-box | clash | clash-provider`
+- `format`: `sing-box | clash`
 - `include`: 只保留匹配此正则的节点 tag
 - `exclude`: 排除匹配此正则的节点 tag
 - `strict=1`: 启用严格模式，任一订阅源失败即报错
@@ -206,7 +243,7 @@ npm run deploy
 示例：
 
 ```text
-/convert?device=openwrt&version=1.12.0&url=https://example.com/sub.txt
+/convert?device=openwrt&version=1.13.7&url=https://example.com/sub.txt
 ```
 
 ```text
@@ -214,15 +251,11 @@ npm run deploy
 ```
 
 ```text
-/convert?device=pc&version=1.12.0&url=https://example.com/clash.yaml&template_url=https://example.com/template.json
+/convert?device=pc&version=1.13.7&url=https://example.com/clash.yaml&template_url=https://example.com/template.json
 ```
 
 ```text
-/convert?device=pc&version=1.13.7&format=clash&url=https://example.com/sub.txt
-```
-
-```text
-/convert?format=clash-provider&raw=ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ=@1.2.3.4:443#HK-SS
+/convert?device=pc&format=clash&url=https://example.com/sub.txt
 ```
 
 ```text
@@ -237,6 +270,8 @@ npm run deploy
 
 ### `format=clash`
 
+**可不传 `version`**：省略时与未配置 `version` 的 API 调用一样，使用 `DEFAULT_VERSION` 决定订阅解析通道（legacy/modern）。
+
 返回可直接导入 Clash / Clash.Meta 的完整 YAML 配置，包含：
 
 - `proxies`
@@ -248,10 +283,6 @@ npm run deploy
 - `Proxy` 手动选择组
 - `Auto` 自动测速组
 - `MATCH,Proxy` 规则
-
-### `format=clash-provider`
-
-返回仅包含 `proxies` 的 provider YAML，适合给你自己的 Clash 模板或 `proxy-providers` 使用。
 
 ### 当前支持转换为 Clash 的节点类型
 
@@ -268,7 +299,7 @@ npm run deploy
 ### 当前限制
 
 - `template_url` / `template_raw` 目前只对 `sing-box` 输出生效
-- `format=clash` 与 `format=clash-provider` 暂不支持自定义模板
+- `format=clash` 暂不支持自定义模板
 - 复杂 Clash `proxy-groups` 目前只做输入侧忽略，不做原样保留
 
 ## 缓存策略
@@ -284,7 +315,7 @@ npm run deploy
   - 默认不做 fresh 缓存
   - 失败时允许回退 `1 小时` 内旧模板
 - 最终结果：
-  - `sing-box + 内建模板` / `clash` / `clash-provider` 默认缓存 `5 分钟`
+  - `sing-box + 内建模板` / `clash` 默认缓存 `5 分钟`
   - `sing-box + 远程模板` 默认**不缓存最终结果**
 
 ### 可选环境变量
@@ -305,7 +336,7 @@ npm run deploy
 
 ### KV 绑定
 
-如果要启用缓存，需要为 Worker 绑定一个 KV namespace：
+如果要启用缓存，需要在 **Cloudflare Pages 项目** 的环境设置里绑定 KV namespace（binding 名与下例一致；`wrangler.jsonc` 中的同类配置主要用于本地打包与类型生成）：
 
 ```jsonc
 {
@@ -399,7 +430,7 @@ GET /templates/manual?device=pc&version=1.13.7
 ### 使用示例
 
 ```text
-/convert?device=openwrt&version=1.12.0&url=https://example.com/sub.txt&template=builtin:default
+/convert?device=openwrt&version=1.13.7&url=https://example.com/sub.txt&template=builtin:default
 ```
 
 ```text

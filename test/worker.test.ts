@@ -92,25 +92,39 @@ describe("worker routes", () => {
     expect(data["proxy-groups"][0].name).toBe("Proxy");
   });
 
-  it("returns clash provider yaml when format=clash-provider", async () => {
-    const rawContent = "http://user:pass@proxy.example.com:8080#HTTP-NODE";
+  it("allows clash convert without version (uses server default channel)", async () => {
+    const rawContent = "ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ=@1.2.3.4:443#HK-SS";
     const request = new Request(
-      `https://example.com/convert?device=pc&version=1.13.7&format=clash-provider&raw=${encodeURIComponent(rawContent)}`,
+      `https://example.com/convert?device=pc&format=clash&raw=${encodeURIComponent(rawContent)}`,
     );
-
     const response = await worker.fetch(request, {});
-    const text = await response.text();
-    const data = YAML.parse(text) as {
-      proxies: Array<{ name: string; type: string }>;
-    };
-
     expect(response.status).toBe(200);
-    expect(response.headers.get("x-output-format")).toBe("clash-provider");
-    expect(data.proxies).toHaveLength(1);
-    expect(data.proxies[0]).toMatchObject({
-      name: "HTTP-NODE",
-      type: "http",
-    });
+    expect(response.headers.get("x-output-format")).toBe("clash");
+  });
+
+  it("requires version for sing-box convert (no default)", async () => {
+    const rawContent = "ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ=@1.2.3.4:443#HK-SS";
+    const request = new Request(
+      `https://example.com/convert?device=pc&raw=${encodeURIComponent(rawContent)}`,
+    );
+    const response = await worker.fetch(request, {});
+    const data = (await response.json()) as { ok: boolean; error: string };
+
+    expect(response.status).toBe(400);
+    expect(data.ok).toBe(false);
+    expect(data.error).toContain("version");
+  });
+
+  it("rejects deprecated format=clash-provider", async () => {
+    const request = new Request(
+      "https://example.com/convert?device=pc&version=1.13.7&format=clash-provider",
+    );
+    const response = await worker.fetch(request, {});
+    const data = (await response.json()) as { ok: boolean; error: string };
+
+    expect(response.status).toBe(400);
+    expect(data.ok).toBe(false);
+    expect(data.error).toContain("不支持的输出格式");
   });
 
   it("lists builtin templates", async () => {
@@ -335,5 +349,37 @@ describe("worker routes", () => {
     } finally {
       globalThis.fetch = originalFetch;
     }
+  });
+
+  it("GET / serves console HTML; GET /info serves meta JSON", async () => {
+    const r1 = await worker.fetch(new Request("https://example.com/"), {});
+    expect(r1.status).toBe(200);
+    expect(r1.headers.get("content-type")).toContain("text/html");
+    expect(r1.headers.get("x-sub2sb-console")).toBe("v3");
+    const html = await r1.text();
+    expect(html).toContain("sub2singbox");
+    expect(html).toContain("UI v3");
+    expect(html).toContain('data-sub2sb-worker="v3"');
+
+    const r2 = await worker.fetch(new Request("https://example.com/info"), {});
+    expect(r2.status).toBe(200);
+    const meta = (await r2.json()) as { ok: boolean; endpoints: string[]; console_ui: string };
+    expect(meta.ok).toBe(true);
+    expect(meta.endpoints).toContain("/info");
+    expect(meta.endpoints).toContain("/ui-version");
+    expect(meta.console_ui).toBe("v3");
+
+    const r3 = await worker.fetch(new Request("https://example.com/ui-version"), {});
+    expect(r3.status).toBe(200);
+    const ver = (await r3.json()) as { ok: boolean; console_ui: string; source: string };
+    expect(ver.ok).toBe(true);
+    expect(ver.console_ui).toBe("v3");
+    expect(ver.source).toBe("worker");
+  });
+
+  it("GET /console.html redirects to / (avoid stale static ASSETS copy)", async () => {
+    const r = await worker.fetch(new Request("https://example.com/console.html"), {});
+    expect(r.status).toBe(302);
+    expect(r.headers.get("location")).toBe("https://example.com/");
   });
 });
