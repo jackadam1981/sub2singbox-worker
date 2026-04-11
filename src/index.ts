@@ -1,5 +1,9 @@
 import { tryDecodeBase64 } from "./lib/base64";
 import {
+  getBuiltinTemplate,
+  listBuiltinTemplates,
+} from "./lib/builtin-templates";
+import {
   getCacheDebugInfo,
   getCachedRemoteText,
   getRemoteResourceCacheKey,
@@ -21,7 +25,7 @@ import {
   parseSubscriptionPayload,
 } from "./lib/subscription";
 import { renderTemplate } from "./lib/template";
-import type { WorkerEnv } from "./lib/types";
+import type { BuiltinTemplateDefinition, WorkerEnv } from "./lib/types";
 
 type OutputFormat = "sing-box" | "clash" | "clash-provider";
 
@@ -220,7 +224,25 @@ async function resolvePayloads(
 async function resolveTemplate(
   requestUrl: URL,
   env: WorkerEnv,
-): Promise<{ template?: string; cacheState: string }> {
+): Promise<{
+  template?: string;
+  cacheState: string;
+  builtinTemplate?: BuiltinTemplateDefinition;
+}> {
+  const selectedTemplate = requestUrl.searchParams.get("template");
+  if (selectedTemplate?.startsWith("builtin:")) {
+    const templateId = selectedTemplate.slice("builtin:".length).trim();
+    const builtinTemplate = getBuiltinTemplate(templateId);
+    if (!builtinTemplate) {
+      throw new Error(`未找到内建模板: ${templateId}`);
+    }
+    return {
+      template: builtinTemplate.template_text,
+      cacheState: "builtin",
+      builtinTemplate,
+    };
+  }
+
   const templateRaw = requestUrl.searchParams.get("template_raw");
   const templateRawBase64 = requestUrl.searchParams.get("template_raw_base64");
   if (templateRaw) {
@@ -303,6 +325,8 @@ async function handleConvert(request: Request, env: WorkerEnv): Promise<Response
 
   const outputFormat = resolveOutputFormat(url);
   const hasRemoteTemplate =
+    (url.searchParams.has("template") &&
+      url.searchParams.get("template")?.startsWith("builtin:") !== true) ||
     url.searchParams.has("template_url") ||
     url.searchParams.has("template_raw") ||
     Boolean(env.DEFAULT_TEMPLATE_URL);
@@ -428,7 +452,13 @@ async function handleConvert(request: Request, env: WorkerEnv): Promise<Response
       "cache-control": "no-store",
       "x-profile-id": profile.id,
       "x-node-count": String(filteredOutbounds.length),
-      "x-template-mode": templateResult.template ? "remote" : "builtin",
+      "x-template-mode":
+        templateResult.builtinTemplate || !templateResult.template
+          ? "builtin"
+          : "remote",
+      ...(templateResult.builtinTemplate
+        ? { "x-template-id": templateResult.builtinTemplate.id }
+        : {}),
       "x-output-format": outputFormat,
       "x-cache-result": resultCacheState,
       "x-cache-subscription": payloadResult.cacheState,
@@ -451,6 +481,7 @@ function handleProfiles(env: WorkerEnv): Response {
         format: "sing-box",
       },
       profiles: listProfiles(),
+      builtin_templates: listBuiltinTemplates(),
       guidance: {
         legacy: "sing-box 1.10.0 / 1.11.7 使用 legacy profile",
         modern: "sing-box 1.12.0 / 1.13.7 / 1.14.0-alpha.10 使用 modern profile",
@@ -470,6 +501,16 @@ function handleProfiles(env: WorkerEnv): Response {
           fallback_ua: "可通过 fallback_ua 或 DEFAULT_FALLBACK_USER_AGENT 指定 401/403 时的备用 UA",
         },
       },
+    },
+    env,
+  );
+}
+
+function handleTemplates(env: WorkerEnv): Response {
+  return jsonResponse(
+    {
+      ok: true,
+      templates: listBuiltinTemplates(),
     },
     env,
   );
@@ -504,6 +545,8 @@ export default {
           return jsonResponse({ ok: true }, env);
         case "/debug/cache-policy":
           return jsonResponse({ ok: true, policy: getCacheDebugInfo(env) }, env);
+        case "/templates":
+          return handleTemplates(env);
         case "/profiles":
           return handleProfiles(env);
         case "/convert":

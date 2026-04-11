@@ -113,6 +113,38 @@ describe("worker routes", () => {
     });
   });
 
+  it("lists builtin templates", async () => {
+    const response = await worker.fetch(new Request("https://example.com/templates"), {});
+    const data = (await response.json()) as {
+      templates: Array<{ id: string; name: string }>;
+    };
+
+    expect(response.status).toBe(200);
+    expect(data.templates.some((item) => item.id === "default")).toBe(true);
+    expect(data.templates.some((item) => item.id === "manual")).toBe(true);
+    expect(data.templates.some((item) => item.id === "auto")).toBe(true);
+  });
+
+  it("renders builtin template by id", async () => {
+    const rawContent = "ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ=@1.2.3.4:443#HK-SS";
+    const request = new Request(
+      `https://example.com/convert?device=pc&version=1.13.7&raw=${encodeURIComponent(rawContent)}&template=${encodeURIComponent("builtin:manual")}`,
+    );
+
+    const response = await worker.fetch(request, {});
+    const data = (await response.json()) as {
+      outbounds: Array<{ tag: string; type: string }>;
+    };
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-template-mode")).toBe("builtin");
+    expect(response.headers.get("x-template-id")).toBe("manual");
+    expect(data.outbounds.some((item) => item.tag === "proxy" && item.type === "selector")).toBe(
+      true,
+    );
+    expect(data.outbounds.some((item) => item.tag === "HK-SS")).toBe(true);
+  });
+
   it("tolerates partial source failures by default", async () => {
     const okUrl = "https://source.example/success";
     const badUrl = "https://source.example/fail";

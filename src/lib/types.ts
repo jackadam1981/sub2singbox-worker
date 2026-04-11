@@ -18,6 +18,28 @@ export interface DeviceProfile {
   notes: string[];
 }
 
+export interface BuiltinTemplateMeta {
+  id: string;
+  name: string;
+  description: string;
+  format: "sing-box";
+  supportedDevices: Device[];
+  supportedChannels: VersionChannel[];
+  tags: string[];
+}
+
+export interface BuiltinTemplateDefinition {
+  id: string;
+  title: string;
+  description: string;
+  output_format: "sing-box";
+  compatible_devices: Device[];
+  compatible_channels: VersionChannel[];
+  tags: string[];
+  template_text: string;
+  featured?: boolean;
+}
+
 export interface WorkerEnv {
   ACCESS_PASSWORD?: string;
   DEFAULT_DEVICE?: string;

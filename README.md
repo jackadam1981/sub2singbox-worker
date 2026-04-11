@@ -35,9 +35,15 @@
   - `template_url`
   - `template_raw`
   - `template_raw_base64=1`
+  - `template=builtin:<id>`
+- 支持内建模板库：
+  - `builtin:default`
+  - `builtin:manual`
+  - `builtin:auto`
 - 暴露 Worker 接口：
   - `/health`
   - `/profiles`
+  - `/templates`
   - `/convert`
 
 ## 设计取向
@@ -122,6 +128,10 @@ npm run deploy
 
 返回内建 profile 列表与版本分层建议。
 
+### `GET /templates`
+
+返回当前内建模板库列表与模板元数据。
+
 ### `GET /convert`
 
 查询参数：
@@ -134,6 +144,7 @@ npm run deploy
 - `template_url`: 远程 JSON 模板地址
 - `template_raw`: 直接传入 JSON 模板内容
 - `template_raw_base64=1`: 表示 `template_raw` 需要先做 base64 解码
+- `template`: 内建模板选择，如 `builtin:default`
 - `format`: `sing-box | clash | clash-provider`
 - `include`: 只保留匹配此正则的节点 tag
 - `exclude`: 排除匹配此正则的节点 tag
@@ -295,6 +306,40 @@ npm run deploy
 
 - Clash JSON `proxies`
 - sing-box YAML `outbounds`
+
+## 内建模板库
+
+当前已提供 3 个内建 sing-box 模板，可通过 `template=builtin:<id>` 直接使用：
+
+- `builtin:default`
+  - 尽量接近默认生成配置
+  - 适合作为无模板模式的显式替代
+- `builtin:manual`
+  - 偏向手动 selector 切换
+  - 提供 `Manual` / `Auto` / `Proxy` 结构
+- `builtin:auto`
+  - 偏向自动测速优先
+  - 提供 `Auto` / `Fallback` 等结构
+
+### 查看模板列表
+
+```text
+GET /templates
+```
+
+### 使用示例
+
+```text
+/convert?device=openwrt&version=1.12.0&url=https://example.com/sub.txt&template=builtin:default
+```
+
+```text
+/convert?device=pc&version=1.13.7&raw=ss://...&template=builtin:manual
+```
+
+```text
+/convert?device=android&version=1.13.7&raw=ss://...&template=builtin:auto
+```
 
 ## 远程模板占位符
 
