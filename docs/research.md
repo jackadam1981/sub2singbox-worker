@@ -114,16 +114,16 @@
 
 - `ios`
   - `legacy`: 1.10 / 1.11
-  - `modern`: 1.12 / 1.13 / 1.14 alpha
+  - `modern`: 1.12.0 / 1.13.7 / 1.14.0-alpha.10
 - `android`
   - `legacy`: 1.10 / 1.11
-  - `modern`: 1.12 / 1.13 / 1.14 alpha
+  - `modern`: 1.12.0 / 1.13.7 / 1.14.0-alpha.10
 - `pc`
   - `legacy`: 1.10 / 1.11
-  - `modern`: 1.12 / 1.13 / 1.14 alpha
+  - `modern`: 1.12.0 / 1.13.7 / 1.14.0-alpha.10
 - `openwrt`
   - `legacy`: 1.10 / 1.11
-  - `modern`: 1.12 / 1.13 / 1.14 alpha
+  - `modern`: 1.12.0 / 1.13.7 / 1.14.0-alpha.10
 
 这样分层的原因：
 

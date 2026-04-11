@@ -164,8 +164,8 @@ function handleProfiles(env: WorkerEnv): Response {
       },
       profiles: listProfiles(),
       guidance: {
-        legacy: "sing-box 1.10 / 1.11 使用 legacy profile",
-        modern: "sing-box 1.12+ 使用 modern profile",
+        legacy: "sing-box 1.10.0 / 1.11.7 使用 legacy profile",
+        modern: "sing-box 1.12.0 / 1.13.7 / 1.14.0-alpha.10 使用 modern profile",
       },
     },
     env,
