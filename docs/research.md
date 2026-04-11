@@ -106,7 +106,7 @@
 - 先做 Worker 友好的 MVP
 - 用内建 profile 替代复杂模板仓库
 - 先支持常见标准 URI 订阅
-- 后续再扩展 YAML/Clash/sing-box JSON 输入与 KV 缓存
+- 逐步扩展到 YAML/Clash/sing-box JSON 输入与 Clash YAML 输出
 
 ## 4. 设备与版本的设计结论
 
@@ -138,6 +138,7 @@
 为了优先交付可用 MVP，以下内容仍暂未实现：
 
 - 复杂 Clash `proxy-groups` 到 sing-box 组策略的映射
+- 复杂 sing-box 分组策略到 Clash `proxy-groups` 的模板化映射
 - 更强的 sing-box JSON 聚合与模板校验
 - NotesName / 自定义过滤器 这类模板 DSL
 - 国家分组、自动测速、复杂 rule_set 注入

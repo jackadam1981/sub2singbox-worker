@@ -577,6 +577,19 @@ function getNestedObjectField(
   return isJsonObject(value) ? (value as Record<string, unknown>) : undefined;
 }
 
+function stringifyClashPluginOpts(opts: Record<string, unknown> | undefined): string | undefined {
+  if (!opts) {
+    return undefined;
+  }
+
+  const result = Object.entries(opts)
+    .filter(([, value]) => value !== null && value !== undefined && `${value}`.trim().length > 0)
+    .map(([key, value]) => `${key}=${String(value)}`)
+    .join(";");
+
+  return result.length > 0 ? result : undefined;
+}
+
 function buildTlsFromClashProxy(proxy: Record<string, unknown>, defaults: {
   security?: string;
   host?: string;
@@ -688,7 +701,7 @@ function parseClashProxy(proxy: Record<string, unknown>): SingBoxOutbound | null
       if (!method || !password) {
         return null;
       }
-      return {
+      const outbound: SingBoxOutbound = {
         type: "shadowsocks",
         tag,
         server,
@@ -696,6 +709,23 @@ function parseClashProxy(proxy: Record<string, unknown>): SingBoxOutbound | null
         method,
         password,
       };
+      const plugin = getStringField(proxy, "plugin");
+      const pluginOpts = stringifyClashPluginOpts(getNestedObjectField(proxy, "plugin-opts"));
+      if (plugin) {
+        outbound.plugin = plugin;
+      }
+      if (pluginOpts) {
+        outbound.plugin_opts = pluginOpts;
+      }
+      const udp = getBooleanField(proxy, "udp");
+      if (udp !== undefined) {
+        outbound.udp_over_tcp = udp;
+      }
+      const tfo = getBooleanField(proxy, "tfo");
+      if (tfo !== undefined) {
+        outbound.tcp_fast_open = tfo;
+      }
+      return outbound;
     }
     case "vmess": {
       const uuid = getStringField(proxy, "uuid");
@@ -720,6 +750,14 @@ function parseClashProxy(proxy: Record<string, unknown>): SingBoxOutbound | null
       const transport = buildTransportFromClashProxy(proxy);
       if (transport) {
         outbound.transport = transport;
+      }
+      const udp = getBooleanField(proxy, "udp");
+      if (udp !== undefined) {
+        outbound.udp_over_tcp = udp;
+      }
+      const tfo = getBooleanField(proxy, "tfo");
+      if (tfo !== undefined) {
+        outbound.tcp_fast_open = tfo;
       }
       return outbound;
     }
@@ -753,6 +791,14 @@ function parseClashProxy(proxy: Record<string, unknown>): SingBoxOutbound | null
       if (transport) {
         outbound.transport = transport;
       }
+      const udp = getBooleanField(proxy, "udp");
+      if (udp !== undefined) {
+        outbound.udp_over_tcp = udp;
+      }
+      const tfo = getBooleanField(proxy, "tfo");
+      if (tfo !== undefined) {
+        outbound.tcp_fast_open = tfo;
+      }
       return outbound;
     }
     case "trojan": {
@@ -774,6 +820,47 @@ function parseClashProxy(proxy: Record<string, unknown>): SingBoxOutbound | null
       const transport = buildTransportFromClashProxy(proxy);
       if (transport) {
         outbound.transport = transport;
+      }
+      const udp = getBooleanField(proxy, "udp");
+      if (udp !== undefined) {
+        outbound.udp_over_tcp = udp;
+      }
+      const tfo = getBooleanField(proxy, "tfo");
+      if (tfo !== undefined) {
+        outbound.tcp_fast_open = tfo;
+      }
+      return outbound;
+    }
+    case "hysteria": {
+      const auth = getStringField(proxy, "auth-str", "auth_str");
+      const outbound: SingBoxOutbound = {
+        type: "hysteria",
+        tag,
+        server,
+        server_port: serverPort,
+      };
+      if (auth) {
+        outbound.auth_str = auth;
+      }
+      const obfs = getStringField(proxy, "obfs");
+      const obfsPassword = getStringField(proxy, "obfs-password", "obfs_password");
+      if (obfs) {
+        outbound.obfs = obfs;
+      }
+      if (obfsPassword) {
+        outbound.obfs_password = obfsPassword;
+      }
+      const upMbps = getNumberField(proxy, "up", "up_mbps");
+      const downMbps = getNumberField(proxy, "down", "down_mbps");
+      if (upMbps !== undefined) {
+        outbound.up_mbps = upMbps;
+      }
+      if (downMbps !== undefined) {
+        outbound.down_mbps = downMbps;
+      }
+      const tls = buildTlsFromClashProxy(proxy, { security: "tls" });
+      if (tls) {
+        outbound.tls = tls;
       }
       return outbound;
     }
@@ -844,7 +931,8 @@ function parseClashProxy(proxy: Record<string, unknown>): SingBoxOutbound | null
       }
       return outbound;
     }
-    case "http": {
+    case "http":
+    case "https": {
       const outbound: SingBoxOutbound = {
         type: "http",
         tag,
@@ -859,7 +947,7 @@ function parseClashProxy(proxy: Record<string, unknown>): SingBoxOutbound | null
       if (password) {
         outbound.password = password;
       }
-      if (getBooleanField(proxy, "tls")) {
+      if (clashType === "https" || getBooleanField(proxy, "tls")) {
         outbound.tls = { enabled: true };
       }
       return outbound;

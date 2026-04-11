@@ -1,4 +1,9 @@
 import { tryDecodeBase64 } from "./lib/base64";
+import {
+  buildClashConfigDocument,
+  buildClashProviderDocument,
+  toClashProxy,
+} from "./lib/clash";
 import { buildRenderContext, buildSingBoxConfig } from "./lib/config";
 import { fetchText } from "./lib/http";
 import { listProfiles, resolveProfile } from "./lib/profiles";
@@ -10,22 +15,28 @@ import {
 import { renderTemplate } from "./lib/template";
 import type { WorkerEnv } from "./lib/types";
 
+type OutputFormat = "sing-box" | "clash" | "clash-provider";
+
 function jsonResponse(body: unknown, env: WorkerEnv, status = 200): Response {
   const headers = new Headers({
     "content-type": "application/json; charset=utf-8",
     "cache-control": "no-store",
   });
 
-  const corsOrigin = env.CORS_ORIGIN?.trim();
-  if (corsOrigin) {
-    headers.set("access-control-allow-origin", corsOrigin);
-    headers.set("access-control-allow-methods", "GET, OPTIONS");
-  }
+  applyCorsHeaders(headers, env);
 
   return new Response(JSON.stringify(body, null, 2), {
     status,
     headers,
   });
+}
+
+function applyCorsHeaders(headers: Headers, env: WorkerEnv): void {
+  const corsOrigin = env.CORS_ORIGIN?.trim();
+  if (corsOrigin) {
+    headers.set("access-control-allow-origin", corsOrigin);
+    headers.set("access-control-allow-methods", "GET, OPTIONS");
+  }
 }
 
 function splitSources(value: string | null | undefined): string[] {
@@ -107,6 +118,28 @@ async function resolveTemplate(
   return fetchText(templateUrl, userAgent);
 }
 
+function resolveOutputFormat(requestUrl: URL): OutputFormat {
+  const rawFormat =
+    requestUrl.searchParams.get("format") ??
+    requestUrl.searchParams.get("target") ??
+    "sing-box";
+
+  switch (rawFormat.trim().toLowerCase()) {
+    case "singbox":
+    case "sing-box":
+    case "json":
+      return "sing-box";
+    case "clash":
+      return "clash";
+    case "clash-provider":
+    case "clash_provider":
+    case "provider":
+      return "clash-provider";
+    default:
+      throw new Error(`不支持的输出格式: ${rawFormat}`);
+  }
+}
+
 async function handleConvert(request: Request, env: WorkerEnv): Promise<Response> {
   const url = new URL(request.url);
   if (!isAuthorized(url, request, env)) {
@@ -135,6 +168,39 @@ async function handleConvert(request: Request, env: WorkerEnv): Promise<Response
     url.searchParams.get("exclude"),
   );
 
+  const outputFormat = resolveOutputFormat(url);
+  const supportedClashNodes = filteredOutbounds.filter((outbound) => toClashProxy(outbound) !== null);
+
+  if (outputFormat !== "sing-box") {
+    if (url.searchParams.has("template_url") || url.searchParams.has("template_raw")) {
+      throw new Error("Clash 输出暂不支持 template_url / template_raw，请使用内建 Clash 输出。");
+    }
+
+    if (supportedClashNodes.length === 0) {
+      throw new Error("当前节点中没有可转换为 Clash 的代理类型。");
+    }
+
+    const body =
+      outputFormat === "clash-provider"
+        ? buildClashProviderDocument(filteredOutbounds)
+        : buildClashConfigDocument(filteredOutbounds);
+
+    return new Response(body, {
+      headers: (() => {
+        const headers = new Headers({
+        "content-type": "text/yaml; charset=utf-8",
+        "cache-control": "no-store",
+        "x-profile-id": profile.id,
+        "x-node-count": String(filteredOutbounds.length),
+        "x-output-format": outputFormat,
+        "x-supported-node-count": String(supportedClashNodes.length),
+        });
+        applyCorsHeaders(headers, env);
+        return headers;
+      })(),
+    });
+  }
+
   const template = await resolveTemplate(url, env);
   const config = template
     ? renderTemplate(
@@ -150,6 +216,7 @@ async function handleConvert(request: Request, env: WorkerEnv): Promise<Response
       "x-profile-id": profile.id,
       "x-node-count": String(filteredOutbounds.length),
       "x-template-mode": template ? "remote" : "builtin",
+      "x-output-format": outputFormat,
     },
   });
 }
@@ -161,11 +228,17 @@ function handleProfiles(env: WorkerEnv): Response {
       defaults: {
         device: env.DEFAULT_DEVICE ?? "openwrt",
         version: env.DEFAULT_VERSION ?? "1.12.0",
+        format: "sing-box",
       },
       profiles: listProfiles(),
       guidance: {
         legacy: "sing-box 1.10.0 / 1.11.7 使用 legacy profile",
         modern: "sing-box 1.12.0 / 1.13.7 / 1.14.0-alpha.10 使用 modern profile",
+        outputs: {
+          "sing-box": "输出 sing-box JSON 配置",
+          clash: "输出可直接导入 Clash / Clash.Meta 的完整 YAML 配置",
+          "clash-provider": "输出仅含 proxies 的 Clash provider YAML",
+        },
       },
     },
     env,

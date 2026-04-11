@@ -106,4 +106,38 @@ proxies:
     expect(outbounds[1].type).toBe("shadowsocks");
     expect(outbounds[1].tag).toBe("SG-SS");
   });
+
+  it("parses clash https and hysteria proxies", () => {
+    const yaml = `
+proxies:
+  - name: HTTPS-NODE
+    type: https
+    server: secure.example.com
+    port: 443
+    username: user
+    password: pass
+  - name: HY-NODE
+    type: hysteria
+    server: hy.example.com
+    port: 8443
+    auth-str: token
+    up: 20
+    down: 100
+    sni: hy.example.com
+`;
+
+    const outbounds = parseSubscriptionPayload(yaml, "modern");
+    expect(outbounds).toHaveLength(2);
+    expect(outbounds[0]).toMatchObject({
+      type: "http",
+      server: "secure.example.com",
+      tls: { enabled: true },
+    });
+    expect(outbounds[1]).toMatchObject({
+      type: "hysteria",
+      auth_str: "token",
+      up_mbps: 20,
+      down_mbps: 100,
+    });
+  });
 });

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import YAML from "yaml";
 
 import worker from "../src/index";
 
@@ -69,5 +70,46 @@ describe("worker routes", () => {
     } finally {
       globalThis.fetch = originalFetch;
     }
+  });
+
+  it("returns clash yaml when format=clash", async () => {
+    const rawContent = "ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ=@1.2.3.4:443#HK-SS";
+    const request = new Request(
+      `https://example.com/convert?device=pc&version=1.13.7&format=clash&raw=${encodeURIComponent(rawContent)}`,
+    );
+
+    const response = await worker.fetch(request, {});
+    const text = await response.text();
+    const data = YAML.parse(text) as {
+      proxies: Array<{ name: string }>;
+      "proxy-groups": Array<{ name: string }>;
+    };
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("text/yaml");
+    expect(response.headers.get("x-output-format")).toBe("clash");
+    expect(data.proxies[0].name).toBe("HK-SS");
+    expect(data["proxy-groups"][0].name).toBe("Proxy");
+  });
+
+  it("returns clash provider yaml when format=clash-provider", async () => {
+    const rawContent = "http://user:pass@proxy.example.com:8080#HTTP-NODE";
+    const request = new Request(
+      `https://example.com/convert?device=pc&version=1.13.7&format=clash-provider&raw=${encodeURIComponent(rawContent)}`,
+    );
+
+    const response = await worker.fetch(request, {});
+    const text = await response.text();
+    const data = YAML.parse(text) as {
+      proxies: Array<{ name: string; type: string }>;
+    };
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-output-format")).toBe("clash-provider");
+    expect(data.proxies).toHaveLength(1);
+    expect(data.proxies[0]).toMatchObject({
+      name: "HTTP-NODE",
+      type: "http",
+    });
   });
 });

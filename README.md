@@ -27,6 +27,10 @@
   - base64 订阅文本
   - Clash YAML（`proxies`）
   - sing-box JSON（`outbounds` 或 outbound 数组）
+- 支持输出格式：
+  - `sing-box` JSON
+  - `clash` 完整 YAML 配置
+  - `clash-provider` 仅含 `proxies` 的 YAML
 - 支持远程模板：
   - `template_url`
   - `template_raw`
@@ -54,6 +58,7 @@
 - **内建 profile 生成器**，而不是把模板文件系统照搬进 Worker
 - **协议 URI -> sing-box outbound** 的直接转换
 - **Clash/YAML proxies -> sing-box outbound** 的转换
+- **sing-box outbound -> Clash YAML** 的反向转换
 - **版本差异收敛到 profile/channel**，而不是在单份模板里塞大量条件分支
 - **远程 JSON 模板 + 占位符渲染**，而不是引入复杂服务端模板编辑流
 
@@ -129,6 +134,7 @@ npm run deploy
 - `template_url`: 远程 JSON 模板地址
 - `template_raw`: 直接传入 JSON 模板内容
 - `template_raw_base64=1`: 表示 `template_raw` 需要先做 base64 解码
+- `format`: `sing-box | clash | clash-provider`
 - `include`: 只保留匹配此正则的节点 tag
 - `exclude`: 排除匹配此正则的节点 tag
 - `ua`: 拉取订阅时使用的 User-Agent
@@ -147,6 +153,52 @@ npm run deploy
 ```text
 /convert?device=pc&version=1.12.0&url=https://example.com/clash.yaml&template_url=https://example.com/template.json
 ```
+
+```text
+/convert?device=pc&version=1.13.7&format=clash&url=https://example.com/sub.txt
+```
+
+```text
+/convert?format=clash-provider&raw=ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ=@1.2.3.4:443#HK-SS
+```
+
+## Clash 输出说明
+
+### `format=clash`
+
+返回可直接导入 Clash / Clash.Meta 的完整 YAML 配置，包含：
+
+- `proxies`
+- `proxy-groups`
+- `rules`
+
+默认会生成：
+
+- `Proxy` 手动选择组
+- `Auto` 自动测速组
+- `MATCH,Proxy` 规则
+
+### `format=clash-provider`
+
+返回仅包含 `proxies` 的 provider YAML，适合给你自己的 Clash 模板或 `proxy-providers` 使用。
+
+### 当前支持转换为 Clash 的节点类型
+
+- `shadowsocks`
+- `vmess`
+- `vless`
+- `trojan`
+- `hysteria`
+- `hysteria2`
+- `tuic`
+- `socks`
+- `http`
+
+### 当前限制
+
+- `template_url` / `template_raw` 目前只对 `sing-box` 输出生效
+- `format=clash` 与 `format=clash-provider` 暂不支持自定义模板
+- 复杂 Clash `proxy-groups` 目前只做输入侧忽略，不做原样保留
 
 ## 远程模板占位符
 
@@ -187,6 +239,7 @@ npm run deploy
 - KV / Cache API 缓存层
 - 定时刷新与预热
 - 节点国家分组、复杂 selector 规则生成
+- 复杂 Clash `proxy-groups` 的原样迁移与模板化输出
 - 规则集下载与自动修正
 
 这些内容已经在文档中留了后续扩展方向，见：[`docs/research.md`](docs/research.md)
