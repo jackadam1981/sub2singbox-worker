@@ -114,22 +114,23 @@
 
 - `ios`
   - `legacy`: 1.10 / 1.11
-  - `modern`: 1.12+
+  - `modern`: 1.12 / 1.13 / 1.14 alpha
 - `android`
   - `legacy`: 1.10 / 1.11
-  - `modern`: 1.12+
+  - `modern`: 1.12 / 1.13 / 1.14 alpha
 - `pc`
   - `legacy`: 1.10 / 1.11
-  - `modern`: 1.12+
+  - `modern`: 1.12 / 1.13 / 1.14 alpha
 - `openwrt`
   - `legacy`: 1.10 / 1.11
-  - `modern`: 1.12+
+  - `modern`: 1.12 / 1.13 / 1.14 alpha
 
 这样分层的原因：
 
 - 参考项目的核心痛点来自 1.12 前后模板不兼容
 - 1.10 / 1.11 可先归并为 legacy 档
-- 1.12 起 DNS server / domain_resolver 等语义变化更明显
+- 1.12 起 DNS server / domain_resolver 等语义变化更明显，1.13.7 仍可沿用该通道
+- 1.14.0-alpha.10 当前主要是新增弃用项，尚未要求我们现有 modern 模板分裂出新通道
 - 设备差异主要体现在模板策略和入站方式，而不是节点解析方式
 
 ## 5. 当前版本仍暂未实现的能力

@@ -12,7 +12,7 @@
 当前版本的目标不是一次性复刻它们全部能力，而是先落一个更适合 Workers 的最小可用版本：
 
 - 支持按目标设备区分模板：`ios` / `android` / `pc` / `openwrt`
-- 支持按 sing-box 版本区分模板：`legacy (1.10 / 1.11)`、`modern (1.12+)`
+- 支持按 sing-box 版本区分模板：`legacy (1.10 / 1.11)`、`modern (1.12+，已覆盖 1.13.7 与 1.14.0-alpha.10)`
 - 支持常见 URI 订阅解析为 sing-box outbound：
   - `ss`
   - `vmess`
@@ -62,7 +62,7 @@
 ### 版本通道
 
 - `legacy`: sing-box `1.10.x` / `1.11.x`
-- `modern`: sing-box `1.12.x` 及以上
+- `modern`: sing-box `1.12.x` 及以上，当前已明确覆盖 `1.13.7` 与 `1.14.0-alpha.10`
 
 ### 设备通道
 
@@ -76,6 +76,7 @@
 - `legacy` profile 使用旧式 DNS server 表达方式
 - `modern` profile 使用 1.12+ 的 DNS server 新结构
 - `modern` profile 会为使用域名的节点补 `domain_resolver`
+- 当前 `modern` 通道按 `1.12 / 1.13 / 1.14 alpha` 共用一套模板策略
 - `pc` profile 额外附带 `mixed` 入站
 - `openwrt` profile 显式保留 `interface_name`
 
@@ -121,7 +122,7 @@ npm run deploy
 查询参数：
 
 - `device`: `ios | android | pc | openwrt`
-- `version`: 如 `1.11.7`、`1.12.0`
+- `version`: 如 `1.11.7`、`1.13.7`、`1.14.0-alpha.10`
 - `url`: 一个或多个订阅 URL，支持 `,` 或 `|` 分隔
 - `raw`: 直接传入订阅内容
 - `raw_base64=1`: 表示 `raw` 需要先做 base64 解码

@@ -13,6 +13,16 @@ describe("profile resolution", () => {
     expect(resolveProfile("openwrt", "1.12.0").id).toBe("openwrt-modern");
   });
 
+  it("maps 1.13.7 to modern", () => {
+    expect(getVersionChannel("1.13.7")).toBe("modern");
+    expect(resolveProfile("android", "1.13.7").id).toBe("android-modern");
+  });
+
+  it("maps 1.14.0-alpha.10 to modern", () => {
+    expect(getVersionChannel("1.14.0-alpha.10")).toBe("modern");
+    expect(resolveProfile("pc", "1.14.0-alpha.10").id).toBe("pc-modern");
+  });
+
   it("normalizes common device aliases", () => {
     expect(resolveProfile("windows", "1.12.3").id).toBe("pc-modern");
     expect(resolveProfile("router", "1.11.3").id).toBe("openwrt-legacy");
