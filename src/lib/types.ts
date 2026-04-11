@@ -40,6 +40,14 @@ export interface BuiltinTemplateDefinition {
   featured?: boolean;
 }
 
+export interface BuiltinTemplateRecommendation {
+  device: Device;
+  channel: VersionChannel;
+  primary_template_id: string;
+  alternative_template_ids: string[];
+  reason: string;
+}
+
 export interface SourceDebugEntry {
   index: number;
   source: string;

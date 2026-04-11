@@ -125,6 +125,48 @@ describe("worker routes", () => {
     expect(data.templates.some((item) => item.id === "auto")).toBe(true);
   });
 
+  it("returns template recommendations for current profile", async () => {
+    const response = await worker.fetch(
+      new Request("https://example.com/templates?device=pc&version=1.13.7"),
+      {},
+    );
+    const data = (await response.json()) as {
+      recommendation?: { primary_template_id: string };
+      templates: Array<{ id: string; compatible_with_current_profile?: boolean }>;
+    };
+
+    expect(response.status).toBe(200);
+    expect(data.recommendation?.primary_template_id).toBe("manual");
+    expect(
+      data.templates.some(
+        (item) => item.id === "manual" && item.compatible_with_current_profile === true,
+      ),
+    ).toBe(true);
+  });
+
+  it("returns builtin template detail by id", async () => {
+    const response = await worker.fetch(
+      new Request("https://example.com/templates/manual?device=pc&version=1.13.7"),
+      {},
+    );
+    const data = (await response.json()) as {
+      template: {
+        id: string;
+        template_text: string;
+        recommended_for_current_profile?: boolean;
+        recommendation_rank?: number;
+      };
+      recommendation?: { primary_template_id: string };
+    };
+
+    expect(response.status).toBe(200);
+    expect(data.template.id).toBe("manual");
+    expect(data.template.template_text).toContain('"type": "selector"');
+    expect(data.template.recommended_for_current_profile).toBe(true);
+    expect(data.template.recommendation_rank).toBe(1);
+    expect(data.recommendation?.primary_template_id).toBe("manual");
+  });
+
   it("validates conversion inputs without rendering response body", async () => {
     const rawContent = "ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ=@1.2.3.4:443#HK-SS";
     const request = new Request(

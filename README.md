@@ -44,6 +44,7 @@
   - `/health`
   - `/profiles`
   - `/templates`
+  - `/templates/:id`
   - `/validate`
   - `/explain`
   - `/convert`
@@ -133,6 +134,22 @@ npm run deploy
 ### `GET /templates`
 
 返回当前内建模板库列表与模板元数据。
+
+可选查询参数：
+
+- `device`
+- `version`
+
+如果提供了这两个参数，接口会同时返回当前 profile 下的模板推荐结果。
+
+### `GET /templates/:id`
+
+返回单个内建模板详情，包括：
+
+- 模板元数据
+- 模板正文
+- 当前 profile 下是否推荐
+- 推荐排序信息
 
 ### `GET /validate`
 
@@ -365,6 +382,20 @@ npm run deploy
 GET /templates
 ```
 
+```text
+GET /templates?device=pc&version=1.13.7
+```
+
+### 查看模板详情
+
+```text
+GET /templates/manual
+```
+
+```text
+GET /templates/manual?device=pc&version=1.13.7
+```
+
 ### 使用示例
 
 ```text
@@ -378,6 +409,17 @@ GET /templates
 ```text
 /convert?device=android&version=1.13.7&raw=ss://...&template=builtin:auto
 ```
+
+### 当前推荐矩阵
+
+- `ios + legacy` -> `default`
+- `ios + modern` -> `default`
+- `android + legacy` -> `default`
+- `android + modern` -> `auto`
+- `pc + legacy` -> `manual`
+- `pc + modern` -> `manual`
+- `openwrt + legacy` -> `default`
+- `openwrt + modern` -> `auto`
 
 ## 调试与可观测性
 

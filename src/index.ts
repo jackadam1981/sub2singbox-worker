@@ -1,6 +1,11 @@
 import { tryDecodeBase64 } from "./lib/base64";
 import {
+  builtinTemplateDetail,
+  listBuiltinTemplateSummaries,
+  builtinTemplateSummary,
   getBuiltinTemplate,
+  getBuiltinTemplateRecommendation,
+  listBuiltinTemplateDefinitions,
   listBuiltinTemplates,
 } from "./lib/builtin-templates";
 import {
@@ -19,7 +24,7 @@ import {
 import { buildRenderContext, buildSingBoxConfig } from "./lib/config";
 import { AppError, toErrorResponseBody } from "./lib/errors";
 import { fetchText } from "./lib/http";
-import { listProfiles, resolveProfile } from "./lib/profiles";
+import { getVersionChannel, listProfiles, normalizeDevice, resolveProfile } from "./lib/profiles";
 import {
   dedupeAndNormalizeOutbounds,
   filterOutbounds,
@@ -359,6 +364,28 @@ function resolveOutputFormat(requestUrl: URL): OutputFormat {
     default:
       throw new Error(`不支持的输出格式: ${rawFormat}`);
   }
+}
+
+function resolveTemplateRecommendation(url: URL):
+  | {
+      device: ReturnType<typeof normalizeDevice>;
+      channel: ReturnType<typeof getVersionChannel>;
+      recommendation: ReturnType<typeof getBuiltinTemplateRecommendation>;
+    }
+  | undefined {
+  const deviceParam = url.searchParams.get("device");
+  const versionParam = url.searchParams.get("version");
+  if (!deviceParam && !versionParam) {
+    return undefined;
+  }
+
+  const device = normalizeDevice(deviceParam ?? "openwrt");
+  const channel = getVersionChannel(versionParam ?? "1.12.0");
+  return {
+    device,
+    channel,
+    recommendation: getBuiltinTemplateRecommendation(device, channel),
+  };
 }
 
 function summarizeTemplateMode(
@@ -745,16 +772,28 @@ async function handleConvert(request: Request, env: WorkerEnv): Promise<Response
 }
 
 function handleProfiles(env: WorkerEnv): Response {
+  const defaultDevice = env.DEFAULT_DEVICE ?? "openwrt";
+  const defaultVersion = env.DEFAULT_VERSION ?? "1.12.0";
+  const defaultProfile = resolveProfile(defaultDevice, defaultVersion);
+  const defaultRecommendation = getBuiltinTemplateRecommendation(
+    defaultProfile.device,
+    defaultProfile.channel,
+  );
+
   return jsonResponse(
     {
       ok: true,
       defaults: {
-        device: env.DEFAULT_DEVICE ?? "openwrt",
-        version: env.DEFAULT_VERSION ?? "1.12.0",
+        device: defaultDevice,
+        version: defaultVersion,
         format: "sing-box",
+        recommended_template: defaultRecommendation?.primary_template_id ?? null,
       },
       profiles: listProfiles(),
-      builtin_templates: listBuiltinTemplates(),
+      builtin_templates: listBuiltinTemplateSummaries({
+        currentDevice: defaultProfile.device,
+        currentChannel: defaultProfile.channel,
+      }),
       guidance: {
         legacy: "sing-box 1.10.0 / 1.11.7 使用 legacy profile",
         modern: "sing-box 1.12.0 / 1.13.7 / 1.14.0-alpha.10 使用 modern profile",
@@ -779,11 +818,79 @@ function handleProfiles(env: WorkerEnv): Response {
   );
 }
 
-function handleTemplates(env: WorkerEnv): Response {
+function handleTemplates(request: Request, env: WorkerEnv): Response {
+  const url = new URL(request.url);
+  const recommendationInput = resolveTemplateRecommendation(url);
+
   return jsonResponse(
     {
       ok: true,
-      templates: listBuiltinTemplates(),
+      templates: listBuiltinTemplateSummaries(
+        recommendationInput
+          ? {
+              currentDevice: recommendationInput.device,
+              currentChannel: recommendationInput.channel,
+            }
+          : undefined,
+      ),
+      ...(recommendationInput
+        ? {
+            recommendation: recommendationInput.recommendation,
+            current_profile: {
+              device: recommendationInput.device,
+              channel: recommendationInput.channel,
+            },
+          }
+        : {}),
+    },
+    env,
+  );
+}
+
+function handleTemplateDetail(request: Request, env: WorkerEnv): Response {
+  const url = new URL(request.url);
+  const templateId = decodeURIComponent(url.pathname.slice("/templates/".length)).trim();
+  if (!templateId) {
+    throw new AppError({
+      stage: "template",
+      code: "TEMPLATE_ID_REQUIRED",
+      message: "缺少模板 ID。",
+      status: 400,
+    });
+  }
+
+  const template = getBuiltinTemplate(templateId);
+  if (!template) {
+    throw new AppError({
+      stage: "template",
+      code: "BUILTIN_TEMPLATE_NOT_FOUND",
+      message: `未找到内建模板: ${templateId}`,
+      status: 404,
+    });
+  }
+
+  const recommendationInput = resolveTemplateRecommendation(url);
+  return jsonResponse(
+    {
+      ok: true,
+      template: builtinTemplateDetail(
+        template,
+        recommendationInput
+          ? {
+              currentDevice: recommendationInput.device,
+              currentChannel: recommendationInput.channel,
+            }
+          : undefined,
+      ),
+      ...(recommendationInput
+        ? {
+            recommendation: recommendationInput.recommendation,
+            current_profile: {
+              device: recommendationInput.device,
+              channel: recommendationInput.channel,
+            },
+          }
+        : {}),
     },
     env,
   );
@@ -906,7 +1013,7 @@ export default {
         case "/debug/cache-policy":
           return jsonResponse({ ok: true, policy: getCacheDebugInfo(env) }, env);
         case "/templates":
-          return handleTemplates(env);
+          return handleTemplates(request, env);
         case "/profiles":
           return handleProfiles(env);
         case "/validate":
@@ -916,6 +1023,9 @@ export default {
         case "/convert":
           return await handleConvert(request, env);
         default:
+          if (url.pathname.startsWith("/templates/")) {
+            return handleTemplateDetail(request, env);
+          }
           return jsonResponse(
             {
               ok: false,
