@@ -137,9 +137,12 @@ npm run deploy
 - `format`: `sing-box | clash | clash-provider`
 - `include`: 只保留匹配此正则的节点 tag
 - `exclude`: 排除匹配此正则的节点 tag
+- `strict=1`: 启用严格模式，任一订阅源失败即报错
+- `allow_partial=0`: 等价于 `strict=1`
 - `cache=0`: 跳过 fresh 缓存
 - `refresh=1`: 强制回源，并允许在失败时回退 stale 缓存
 - `ua`: 拉取订阅时使用的 User-Agent
+- `fallback_ua`: 当主 UA 返回 401/403 时的备用 UA
 - `password` / `token`: 若配置了 `ACCESS_PASSWORD`，需要携带
 
 示例：
@@ -201,6 +204,41 @@ npm run deploy
 - `template_url` / `template_raw` 目前只对 `sing-box` 输出生效
 - `format=clash` 与 `format=clash-provider` 暂不支持自定义模板
 - 复杂 Clash `proxy-groups` 目前只做输入侧忽略，不做原样保留
+
+## 输入源增强
+
+当前输入源层已经支持以下能力：
+
+- **多源容错**
+  - 默认 tolerant 模式
+  - 多个订阅源里只要还有成功源，就继续转换
+- **严格模式**
+  - `strict=1` 或 `allow_partial=0`
+  - 任一源失败即整体报错
+- **备用 UA**
+  - `ua=...`
+  - `fallback_ua=...`
+  - 当主 UA 返回 `401/403` 时，会自动尝试备用 UA
+- **更多输入兼容**
+  - URI / base64 URI
+  - Clash YAML `proxies`
+  - Clash JSON `proxies`
+  - sing-box JSON `outbounds`
+  - sing-box YAML `outbounds`
+
+### 输入源调试头
+
+每次 `/convert` 响应会额外返回：
+
+- `x-source-total`
+- `x-source-succeeded`
+- `x-source-failed`
+- `x-source-mode`
+
+可用于快速判断这次是：
+- 单源成功
+- 多源部分失败后容错继续
+- strict 模式直接失败
 
 ## 缓存策略
 

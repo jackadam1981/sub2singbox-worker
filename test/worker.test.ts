@@ -112,4 +112,109 @@ describe("worker routes", () => {
       type: "http",
     });
   });
+
+  it("tolerates partial source failures by default", async () => {
+    const okUrl = "https://source.example/success";
+    const badUrl = "https://source.example/fail";
+    const originalFetch = globalThis.fetch;
+
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url === okUrl) {
+        return new Response(
+          "ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ=@1.2.3.4:443#HK-SS",
+          { status: 200 },
+        );
+      }
+      if (url === badUrl) {
+        return new Response("upstream error", { status: 500 });
+      }
+      return originalFetch(input as RequestInfo, init);
+    };
+
+    try {
+      const request = new Request(
+        `https://example.com/convert?device=pc&version=1.13.7&url=${encodeURIComponent(okUrl)}|${encodeURIComponent(badUrl)}`,
+      );
+      const response = await worker.fetch(request, {});
+      const data = (await response.json()) as { outbounds: Array<{ tag: string }> };
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get("x-source-mode")).toBe("tolerant");
+      expect(response.headers.get("x-source-total")).toBe("2");
+      expect(response.headers.get("x-source-succeeded")).toBe("1");
+      expect(response.headers.get("x-source-failed")).toBe("1");
+      expect(data.outbounds.some((item) => item.tag === "HK-SS")).toBe(true);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("fails on partial source failure in strict mode", async () => {
+    const okUrl = "https://source.example/success";
+    const badUrl = "https://source.example/fail";
+    const originalFetch = globalThis.fetch;
+
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url === okUrl) {
+        return new Response(
+          "ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ=@1.2.3.4:443#HK-SS",
+          { status: 200 },
+        );
+      }
+      if (url === badUrl) {
+        return new Response("upstream error", { status: 500 });
+      }
+      return originalFetch(input as RequestInfo, init);
+    };
+
+    try {
+      const request = new Request(
+        `https://example.com/convert?device=pc&version=1.13.7&strict=1&url=${encodeURIComponent(okUrl)}|${encodeURIComponent(badUrl)}`,
+      );
+      const response = await worker.fetch(request, {});
+      const data = (await response.json()) as { error: string };
+
+      expect(response.status).toBe(400);
+      expect(data.error).toContain("strict 模式");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("retries with fallback ua when primary ua is forbidden", async () => {
+    const url = "https://source.example/ua-protected";
+    const originalFetch = globalThis.fetch;
+    const seenUas: string[] = [];
+
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const requestUrl = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (requestUrl === url) {
+        const headers = new Headers(init?.headers);
+        const ua = headers.get("User-Agent") ?? "";
+        seenUas.push(ua);
+        if (ua === "primary-ua") {
+          return new Response("forbidden", { status: 403 });
+        }
+        return new Response(
+          "ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ=@1.2.3.4:443#HK-SS",
+          { status: 200 },
+        );
+      }
+      return originalFetch(input as RequestInfo, init);
+    };
+
+    try {
+      const request = new Request(
+        `https://example.com/convert?device=pc&version=1.13.7&ua=primary-ua&fallback_ua=clash.meta&url=${encodeURIComponent(url)}`,
+      );
+      const response = await worker.fetch(request, {});
+
+      expect(response.status).toBe(200);
+      expect(seenUas).toEqual(["primary-ua", "clash.meta"]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
 });

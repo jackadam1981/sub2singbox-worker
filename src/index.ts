@@ -87,10 +87,32 @@ function shouldBypassCache(url: URL): boolean {
   return cache === "0" || cache === "false" || refresh === "1" || refresh === "true";
 }
 
+function isStrictSourceMode(url: URL): boolean {
+  const strict = url.searchParams.get("strict");
+  const partial = url.searchParams.get("allow_partial");
+  if (strict === "1" || strict === "true") {
+    return true;
+  }
+  if (partial === "0" || partial === "false") {
+    return true;
+  }
+  return false;
+}
+
 async function resolvePayloads(
   requestUrl: URL,
   env: WorkerEnv,
-): Promise<{ payloads: string[]; cacheState: string }> {
+): Promise<{
+  payloads: string[];
+  cacheState: string;
+  sourceStats: {
+    total: number;
+    succeeded: number;
+    failed: number;
+    mode: "strict" | "tolerant";
+    errors: string[];
+  };
+}> {
   const rawInput = requestUrl.searchParams.get("raw");
   const rawIsBase64 = requestUrl.searchParams.get("raw_base64");
   if (rawInput) {
@@ -99,10 +121,30 @@ async function resolvePayloads(
       if (!decoded) {
         throw new Error("raw_base64=1 但 raw 不是有效 base64");
       }
-      return { payloads: [decoded], cacheState: "raw" };
+      return {
+        payloads: [decoded],
+        cacheState: "raw",
+        sourceStats: {
+          total: 1,
+          succeeded: 1,
+          failed: 0,
+          mode: "tolerant",
+          errors: [],
+        },
+      };
     }
 
-    return { payloads: [rawInput], cacheState: "raw" };
+    return {
+      payloads: [rawInput],
+      cacheState: "raw",
+      sourceStats: {
+        total: 1,
+        succeeded: 1,
+        failed: 0,
+        mode: "tolerant",
+        errors: [],
+      },
+    };
   }
 
   const sourceUrls = splitSources(
@@ -113,21 +155,65 @@ async function resolvePayloads(
   }
 
   const userAgent = requestUrl.searchParams.get("ua") ?? env.DEFAULT_USER_AGENT ?? "sing-box";
+  const fallbackUserAgent =
+    requestUrl.searchParams.get("fallback_ua") ??
+    env.DEFAULT_FALLBACK_USER_AGENT ??
+    undefined;
   const bypassFreshCache = shouldBypassCache(requestUrl);
-  const results = await Promise.all(
+  const strictMode = isStrictSourceMode(requestUrl);
+  const settled = await Promise.all(
     sourceUrls.map(async (sourceUrl) => {
-      const cached = await getCachedRemoteText(env, {
-        key: getRemoteResourceCacheKey("subscription", sourceUrl),
-        kind: "subscription",
-        bypassFreshCache,
-        loader: () => fetchText(sourceUrl, userAgent),
-      });
-      return cached;
+      try {
+        const cached = await getCachedRemoteText(env, {
+          key: getRemoteResourceCacheKey("subscription", sourceUrl),
+          kind: "subscription",
+          bypassFreshCache,
+          loader: () =>
+            fetchText(sourceUrl, userAgent, {
+              fallbackUserAgent,
+            }),
+        });
+        return { ok: true as const, url: sourceUrl, cached };
+      } catch (error) {
+        return {
+          ok: false as const,
+          url: sourceUrl,
+          error: error instanceof Error ? error.message : "未知错误",
+        };
+      }
     }),
   );
+
+  const successes = settled.filter(
+    (item): item is { ok: true; url: string; cached: { value: string; source: "network" | "cache-fresh" | "cache-stale" } } =>
+      item.ok,
+  );
+  const failures = settled.filter(
+    (item): item is { ok: false; url: string; error: string } => !item.ok,
+  );
+
+  if (strictMode && failures.length > 0) {
+    throw new Error(
+      `存在订阅源拉取失败（strict 模式）：${failures.map((item) => `${item.url} -> ${item.error}`).join(" | ")}`,
+    );
+  }
+
+  if (successes.length === 0) {
+    throw new Error(
+      `所有订阅源均拉取失败：${failures.map((item) => `${item.url} -> ${item.error}`).join(" | ")}`,
+    );
+  }
+
   return {
-    payloads: results.map((result) => result.value),
-    cacheState: results.map((result) => result.source).join(","),
+    payloads: successes.map((result) => result.cached.value),
+    cacheState: successes.map((result) => `${result.url}:${result.cached.source}`).join(","),
+    sourceStats: {
+      total: sourceUrls.length,
+      succeeded: successes.length,
+      failed: failures.length,
+      mode: strictMode ? "strict" : "tolerant",
+      errors: failures.map((item) => `${item.url} -> ${item.error}`),
+    },
   };
 }
 
@@ -257,6 +343,10 @@ async function handleConvert(request: Request, env: WorkerEnv): Promise<Response
             "x-cache-result": "hit",
             "x-cache-subscription": subscriptionCacheState,
             "x-cache-template": templateCacheState,
+            "x-source-total": String(payloadResult.sourceStats.total),
+            "x-source-succeeded": String(payloadResult.sourceStats.succeeded),
+            "x-source-failed": String(payloadResult.sourceStats.failed),
+            "x-source-mode": payloadResult.sourceStats.mode,
           }),
         });
       }
@@ -271,6 +361,10 @@ async function handleConvert(request: Request, env: WorkerEnv): Promise<Response
           "x-cache-result": "hit",
           "x-cache-subscription": subscriptionCacheState,
           "x-cache-template": templateCacheState,
+          "x-source-total": String(payloadResult.sourceStats.total),
+          "x-source-succeeded": String(payloadResult.sourceStats.succeeded),
+          "x-source-failed": String(payloadResult.sourceStats.failed),
+          "x-source-mode": payloadResult.sourceStats.mode,
         }),
       });
     }
@@ -307,6 +401,10 @@ async function handleConvert(request: Request, env: WorkerEnv): Promise<Response
         "x-cache-result": resultCacheState,
         "x-cache-subscription": subscriptionCacheState,
         "x-cache-template": templateCacheState,
+        "x-source-total": String(payloadResult.sourceStats.total),
+        "x-source-succeeded": String(payloadResult.sourceStats.succeeded),
+        "x-source-failed": String(payloadResult.sourceStats.failed),
+        "x-source-mode": payloadResult.sourceStats.mode,
       }),
     });
   }
@@ -335,6 +433,10 @@ async function handleConvert(request: Request, env: WorkerEnv): Promise<Response
       "x-cache-result": resultCacheState,
       "x-cache-subscription": payloadResult.cacheState,
       "x-cache-template": templateResult.cacheState,
+      "x-source-total": String(payloadResult.sourceStats.total),
+      "x-source-succeeded": String(payloadResult.sourceStats.succeeded),
+      "x-source-failed": String(payloadResult.sourceStats.failed),
+      "x-source-mode": payloadResult.sourceStats.mode,
     }),
   });
 }
@@ -361,6 +463,11 @@ function handleProfiles(env: WorkerEnv): Response {
           subscription: "默认缓存 10 分钟，失败时回退 24 小时旧内容",
           template: "默认不做 fresh 缓存，失败时可回退最近 1 小时旧模板",
           result: "远程模板默认不缓存结果；其他输出默认缓存 5 分钟",
+        },
+        sources: {
+          tolerant: "默认容错模式，多源订阅中部分失败时只要仍有成功源就继续转换",
+          strict: "strict=1 或 allow_partial=0 时启用严格模式，任一源失败即报错",
+          fallback_ua: "可通过 fallback_ua 或 DEFAULT_FALLBACK_USER_AGENT 指定 401/403 时的备用 UA",
         },
       },
     },

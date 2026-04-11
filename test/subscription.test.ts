@@ -140,4 +140,47 @@ proxies:
       down_mbps: 100,
     });
   });
+
+  it("parses clash json proxies", () => {
+    const content = JSON.stringify({
+      proxies: [
+        {
+          name: "HK-JSON",
+          type: "trojan",
+          server: "trojan.example.com",
+          port: 443,
+          password: "secret",
+          sni: "trojan.example.com",
+        },
+      ],
+    });
+
+    const outbounds = parseSubscriptionPayload(content, "modern");
+    expect(outbounds).toHaveLength(1);
+    expect(outbounds[0]).toMatchObject({
+      type: "trojan",
+      tag: "HK-JSON",
+      server: "trojan.example.com",
+    });
+  });
+
+  it("parses sing-box yaml outbounds", () => {
+    const content = `
+outbounds:
+  - type: shadowsocks
+    tag: YAML-SS
+    server: 1.2.3.4
+    server_port: 443
+    method: aes-256-gcm
+    password: pass
+`;
+
+    const outbounds = parseSubscriptionPayload(content, "legacy");
+    expect(outbounds).toHaveLength(1);
+    expect(outbounds[0]).toMatchObject({
+      type: "shadowsocks",
+      tag: "YAML-SS",
+      server: "1.2.3.4",
+    });
+  });
 });

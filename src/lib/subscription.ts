@@ -486,7 +486,18 @@ function stableStringify(value: JsonValue): string {
 
 function extractOutboundsFromJson(value: unknown): SingBoxOutbound[] {
   if (Array.isArray(value)) {
-    return value.filter(isOutboundLike);
+    const directOutbounds = value.filter(isOutboundLike);
+    if (directOutbounds.length > 0) {
+      return directOutbounds;
+    }
+
+    return value
+      .map((item) =>
+        typeof item === "object" && item !== null && !Array.isArray(item)
+          ? parseClashProxy(item as Record<string, unknown>)
+          : null,
+      )
+      .filter((item): item is SingBoxOutbound => Boolean(item));
   }
 
   if (!isJsonObject(value)) {
@@ -495,6 +506,16 @@ function extractOutboundsFromJson(value: unknown): SingBoxOutbound[] {
 
   if (Array.isArray(value.outbounds)) {
     return value.outbounds.filter(isOutboundLike);
+  }
+
+  if (Array.isArray(value.proxies)) {
+    return value.proxies
+      .map((item) =>
+        typeof item === "object" && item !== null && !Array.isArray(item)
+          ? parseClashProxy(item as Record<string, unknown>)
+          : null,
+      )
+      .filter((item): item is SingBoxOutbound => Boolean(item));
   }
 
   return [];
@@ -959,17 +980,11 @@ function parseClashProxy(proxy: Record<string, unknown>): SingBoxOutbound | null
 
 function extractOutboundsFromClashYaml(content: string): SingBoxOutbound[] {
   const parsed = YAML.parse(content) as unknown;
-  if (!isJsonObject(parsed) || !Array.isArray(parsed.proxies)) {
+  if (!isJsonObject(parsed)) {
     return [];
   }
 
-  return parsed.proxies
-    .map((item) =>
-      typeof item === "object" && item !== null && !Array.isArray(item)
-        ? parseClashProxy(item as Record<string, unknown>)
-        : null,
-    )
-    .filter((item): item is SingBoxOutbound => Boolean(item));
+  return extractOutboundsFromJson(parsed);
 }
 
 export function parseSubscriptionPayload(payload: string, channel: VersionChannel): SingBoxOutbound[] {
@@ -991,14 +1006,22 @@ export function parseSubscriptionPayload(payload: string, channel: VersionChanne
     // JSON 不是必选格式，继续尝试其他解析方式。
   }
 
-  if (isLikelyClashYaml(content)) {
-    const outbounds = extractOutboundsFromClashYaml(content).map((outbound) =>
-      applyDialHints(outbound, channel),
-    );
-    if (outbounds.length > 0) {
-      return outbounds;
+  if (content.includes(":")) {
+    try {
+      const outbounds = extractOutboundsFromClashYaml(content).map((outbound) =>
+        applyDialHints(outbound, channel),
+      );
+      if (outbounds.length > 0) {
+        return outbounds;
+      }
+      if (isLikelyClashYaml(content)) {
+        throw new Error("Clash/YAML 内容存在，但未能解析出可用 proxies。");
+      }
+    } catch (error) {
+      if (isLikelyClashYaml(content)) {
+        throw error;
+      }
     }
-    throw new Error("Clash/YAML 内容存在，但未能解析出可用 proxies。");
   }
 
   if (!content.includes("://")) {

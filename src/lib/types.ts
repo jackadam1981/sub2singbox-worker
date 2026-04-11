@@ -24,6 +24,7 @@ export interface WorkerEnv {
   DEFAULT_VERSION?: string;
   DEFAULT_SUBSCRIPTION_URL?: string;
   DEFAULT_USER_AGENT?: string;
+  DEFAULT_FALLBACK_USER_AGENT?: string;
   DEFAULT_TEMPLATE_URL?: string;
   CORS_ORIGIN?: string;
   SUBSCRIPTION_CACHE_TTL?: string;
