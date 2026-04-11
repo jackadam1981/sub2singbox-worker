@@ -24,6 +24,7 @@ export interface WorkerEnv {
   DEFAULT_VERSION?: string;
   DEFAULT_SUBSCRIPTION_URL?: string;
   DEFAULT_USER_AGENT?: string;
+  DEFAULT_TEMPLATE_URL?: string;
   CORS_ORIGIN?: string;
 }
 
@@ -31,3 +32,14 @@ export type SingBoxOutbound = JsonObject & {
   type: string;
   tag: string;
 };
+
+export interface RenderContext {
+  profile: DeviceProfile;
+  dns: JsonObject;
+  inbounds: JsonValue[];
+  selectorOutbounds: JsonObject[];
+  nodeOutbounds: SingBoxOutbound[];
+  allOutbounds: JsonValue[];
+  route: JsonObject;
+  experimental: JsonObject;
+}

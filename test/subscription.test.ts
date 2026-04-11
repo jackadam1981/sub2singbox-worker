@@ -74,4 +74,36 @@ describe("subscription parser", () => {
     expect(outbounds[0].tag).toBe("Node");
     expect(outbounds[1].tag).toBe("Node 2");
   });
+
+  it("parses clash yaml proxies", () => {
+    const yaml = `
+proxies:
+  - name: HK-WS
+    type: vmess
+    server: vmess.example.com
+    port: 443
+    uuid: 11111111-1111-1111-1111-111111111111
+    alterId: 0
+    cipher: auto
+    tls: true
+    network: ws
+    ws-opts:
+      path: /ws
+      headers:
+        Host: cdn.example.com
+  - name: SG-SS
+    type: ss
+    server: 1.2.3.4
+    port: 443
+    cipher: aes-256-gcm
+    password: pass
+`;
+
+    const outbounds = parseSubscriptionPayload(yaml, "modern");
+    expect(outbounds).toHaveLength(2);
+    expect(outbounds[0].type).toBe("vmess");
+    expect(outbounds[0].transport).toMatchObject({ type: "ws", path: "/ws" });
+    expect(outbounds[1].type).toBe("shadowsocks");
+    expect(outbounds[1].tag).toBe("SG-SS");
+  });
 });

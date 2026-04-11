@@ -132,14 +132,13 @@
 - 1.12 起 DNS server / domain_resolver 等语义变化更明显
 - 设备差异主要体现在模板策略和入站方式，而不是节点解析方式
 
-## 5. 当前版本暂未实现的能力
+## 5. 当前版本仍暂未实现的能力
 
-为了优先交付可用 MVP，以下内容暂未实现：
+为了优先交付可用 MVP，以下内容仍暂未实现：
 
-- Clash YAML 订阅解析
-- sing-box JSON 订阅聚合
-- 远程自定义模板拉取
-- NotesName / Nodes 这类模板 DSL
+- 复杂 Clash `proxy-groups` 到 sing-box 组策略的映射
+- 更强的 sing-box JSON 聚合与模板校验
+- NotesName / 自定义过滤器 这类模板 DSL
 - 国家分组、自动测速、复杂 rule_set 注入
 - KV / Cache API 缓存远程订阅
 - 认证密码、管理接口刷新

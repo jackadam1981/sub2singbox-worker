@@ -1,11 +1,13 @@
 import { tryDecodeBase64 } from "./lib/base64";
-import { buildSingBoxConfig } from "./lib/config";
+import { buildRenderContext, buildSingBoxConfig } from "./lib/config";
+import { fetchText } from "./lib/http";
 import { listProfiles, resolveProfile } from "./lib/profiles";
 import {
   dedupeAndNormalizeOutbounds,
   filterOutbounds,
   parseSubscriptionPayload,
 } from "./lib/subscription";
+import { renderTemplate } from "./lib/template";
 import type { WorkerEnv } from "./lib/types";
 
 function jsonResponse(body: unknown, env: WorkerEnv, status = 200): Response {
@@ -51,21 +53,6 @@ function isAuthorized(url: URL, request: Request, env: WorkerEnv): boolean {
   return candidates.some((candidate) => candidate === env.ACCESS_PASSWORD);
 }
 
-async function fetchSubscription(url: string, userAgent: string): Promise<string> {
-  const response = await fetch(url, {
-    headers: {
-      "User-Agent": userAgent,
-      Accept: "text/plain, application/json;q=0.9, */*;q=0.8",
-    },
-  });
-
-  if (!response.ok) {
-    throw new Error(`拉取订阅失败: ${url} (${response.status})`);
-  }
-
-  return response.text();
-}
-
 async function resolvePayloads(requestUrl: URL, env: WorkerEnv): Promise<string[]> {
   const rawInput = requestUrl.searchParams.get("raw");
   const rawIsBase64 = requestUrl.searchParams.get("raw_base64");
@@ -89,7 +76,35 @@ async function resolvePayloads(requestUrl: URL, env: WorkerEnv): Promise<string[
   }
 
   const userAgent = requestUrl.searchParams.get("ua") ?? env.DEFAULT_USER_AGENT ?? "sing-box";
-  return Promise.all(sourceUrls.map((url) => fetchSubscription(url, userAgent)));
+  return Promise.all(sourceUrls.map((url) => fetchText(url, userAgent)));
+}
+
+async function resolveTemplate(
+  requestUrl: URL,
+  env: WorkerEnv,
+): Promise<string | undefined> {
+  const templateRaw = requestUrl.searchParams.get("template_raw");
+  const templateRawBase64 = requestUrl.searchParams.get("template_raw_base64");
+  if (templateRaw) {
+    if (templateRawBase64 === "1" || templateRawBase64 === "true") {
+      const decoded = tryDecodeBase64(templateRaw);
+      if (!decoded) {
+        throw new Error("template_raw_base64=1 但 template_raw 不是有效 base64");
+      }
+      return decoded;
+    }
+
+    return templateRaw;
+  }
+
+  const templateUrl =
+    requestUrl.searchParams.get("template_url") ?? env.DEFAULT_TEMPLATE_URL ?? undefined;
+  if (!templateUrl) {
+    return undefined;
+  }
+
+  const userAgent = requestUrl.searchParams.get("ua") ?? env.DEFAULT_USER_AGENT ?? "sing-box";
+  return fetchText(templateUrl, userAgent);
 }
 
 async function handleConvert(request: Request, env: WorkerEnv): Promise<Response> {
@@ -120,7 +135,13 @@ async function handleConvert(request: Request, env: WorkerEnv): Promise<Response
     url.searchParams.get("exclude"),
   );
 
-  const config = buildSingBoxConfig(profile, filteredOutbounds);
+  const template = await resolveTemplate(url, env);
+  const config = template
+    ? renderTemplate(
+        template,
+        buildRenderContext(profile, filteredOutbounds),
+      )
+    : buildSingBoxConfig(profile, filteredOutbounds);
 
   return new Response(JSON.stringify(config, null, 2), {
     headers: {
@@ -128,6 +149,7 @@ async function handleConvert(request: Request, env: WorkerEnv): Promise<Response
       "cache-control": "no-store",
       "x-profile-id": profile.id,
       "x-node-count": String(filteredOutbounds.length),
+      "x-template-mode": template ? "remote" : "builtin",
     },
   });
 }
@@ -156,7 +178,8 @@ function handleRoot(env: WorkerEnv): Response {
       ok: true,
       service: "sub2singbox-worker",
       endpoints: ["/health", "/profiles", "/convert"],
-      example: "/convert?device=openwrt&version=1.12.0&url=https://example.com/sub.txt",
+      example:
+        "/convert?device=openwrt&version=1.12.0&url=https://example.com/sub.txt&template_url=https://example.com/template.json",
     },
     env,
   );

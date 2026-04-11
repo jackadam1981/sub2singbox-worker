@@ -1,6 +1,12 @@
-import type { DeviceProfile, JsonObject, JsonValue, SingBoxOutbound } from "./types";
+import type {
+  DeviceProfile,
+  JsonObject,
+  JsonValue,
+  RenderContext,
+  SingBoxOutbound,
+} from "./types";
 
-function buildTunInbound(profile: DeviceProfile): JsonObject {
+export function buildTunInbound(profile: DeviceProfile): JsonObject {
   const base: JsonObject = {
     type: "tun",
     tag: "tun-in",
@@ -22,7 +28,7 @@ function buildTunInbound(profile: DeviceProfile): JsonObject {
   return base;
 }
 
-function buildMixedInbound(): JsonObject {
+export function buildMixedInbound(): JsonObject {
   return {
     type: "mixed",
     tag: "mixed-in",
@@ -33,7 +39,7 @@ function buildMixedInbound(): JsonObject {
   };
 }
 
-function buildDns(profile: DeviceProfile): JsonObject {
+export function buildDns(profile: DeviceProfile): JsonObject {
   if (profile.channel === "modern") {
     return {
       servers: [
@@ -71,7 +77,7 @@ function buildDns(profile: DeviceProfile): JsonObject {
   };
 }
 
-function buildSelectorOutbounds(nodeTags: string[]): JsonObject[] {
+export function buildSelectorOutbounds(nodeTags: string[]): JsonObject[] {
   const selectionTargets = nodeTags.length > 0 ? nodeTags : ["direct"];
 
   return [
@@ -101,7 +107,7 @@ function buildSelectorOutbounds(nodeTags: string[]): JsonObject[] {
   ];
 }
 
-function buildRoute(profile: DeviceProfile): JsonObject {
+export function buildRoute(profile: DeviceProfile): JsonObject {
   const route: JsonObject = {
     auto_detect_interface: true,
     final: "proxy",
@@ -115,30 +121,61 @@ function buildRoute(profile: DeviceProfile): JsonObject {
   return route;
 }
 
-export function buildSingBoxConfig(profile: DeviceProfile, nodes: SingBoxOutbound[]): JsonObject {
+export function buildExperimental(profile: DeviceProfile): JsonObject {
+  return {
+    cache_file: {
+      enabled: profile.device === "openwrt" || profile.device === "pc",
+    },
+  };
+}
+
+export function buildRenderContext(
+  profile: DeviceProfile,
+  nodes: SingBoxOutbound[],
+): RenderContext {
   const inbounds = [buildTunInbound(profile)];
   if (profile.device === "pc") {
     inbounds.push(buildMixedInbound());
   }
 
-  const outbounds: JsonValue[] = [
-    ...buildSelectorOutbounds(nodes.map((node) => node.tag)),
-    ...nodes,
-  ];
-
-  return {
+  const selectorOutbounds = buildSelectorOutbounds(nodes.map((node) => node.tag));
+  const allOutbounds: JsonValue[] = [...selectorOutbounds, ...nodes];
+  const generatedConfig: JsonObject = {
     log: {
       level: "info",
       timestamp: true,
     },
     dns: buildDns(profile),
     inbounds,
-    outbounds,
+    outbounds: allOutbounds,
     route: buildRoute(profile),
-    experimental: {
-      cache_file: {
-        enabled: profile.device === "openwrt" || profile.device === "pc",
-      },
+    experimental: buildExperimental(profile),
+  };
+
+  return {
+    profile,
+    dns: generatedConfig.dns as JsonObject,
+    inbounds,
+    selectorOutbounds,
+    nodeOutbounds: nodes,
+    allOutbounds,
+    route: generatedConfig.route as JsonObject,
+    experimental: generatedConfig.experimental as JsonObject,
+  };
+}
+
+export function buildSingBoxConfig(profile: DeviceProfile, nodes: SingBoxOutbound[]): JsonObject {
+  const context = buildRenderContext(profile, nodes);
+
+  return {
+    log: {
+      level: "info",
+      timestamp: true,
     },
+    dns: context.dns,
+    inbounds: context.inbounds,
+    outbounds: context.allOutbounds,
+    route: context.route,
+    experimental: context.experimental,
   };
 }

@@ -1,3 +1,5 @@
+import YAML from "yaml";
+
 import { tryDecodeBase64 } from "./base64";
 import type { JsonObject, JsonValue, SingBoxOutbound, VersionChannel } from "./types";
 
@@ -502,6 +504,386 @@ function isLikelyClashYaml(content: string): boolean {
   return /^proxies:\s*$/m.test(content) || /^proxy-groups:\s*$/m.test(content);
 }
 
+function getStringField(record: Record<string, unknown>, ...keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+  return undefined;
+}
+
+function getNumberField(record: Record<string, unknown>, ...keys: string[]): number | undefined {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return value;
+    }
+    if (typeof value === "string" && value.trim()) {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed)) {
+        return parsed;
+      }
+    }
+  }
+  return undefined;
+}
+
+function getBooleanField(record: Record<string, unknown>, ...keys: string[]): boolean | undefined {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "boolean") {
+      return value;
+    }
+    if (typeof value === "string") {
+      if (value === "true" || value === "1") {
+        return true;
+      }
+      if (value === "false" || value === "0") {
+        return false;
+      }
+    }
+  }
+  return undefined;
+}
+
+function toArrayField(record: Record<string, unknown>, ...keys: string[]): string[] | undefined {
+  for (const key of keys) {
+    const value = record[key];
+    if (Array.isArray(value)) {
+      const items = value
+        .map((item) => (typeof item === "string" ? item.trim() : ""))
+        .filter(Boolean);
+      if (items.length > 0) {
+        return items;
+      }
+    }
+    if (typeof value === "string" && value.trim()) {
+      return value
+        .split(",")
+        .map((item) => item.trim())
+        .filter(Boolean);
+    }
+  }
+  return undefined;
+}
+
+function getNestedObjectField(
+  record: Record<string, unknown>,
+  key: string,
+): Record<string, unknown> | undefined {
+  const value = record[key];
+  return isJsonObject(value) ? (value as Record<string, unknown>) : undefined;
+}
+
+function buildTlsFromClashProxy(proxy: Record<string, unknown>, defaults: {
+  security?: string;
+  host?: string;
+  sni?: string;
+  fingerprint?: string;
+  alpn?: string;
+  insecure?: string;
+  publicKey?: string;
+  shortId?: string;
+} = {}): JsonObject | undefined {
+  const fakeUrl = new URL(
+    `${defaults.security === "tls" ? "https" : "http"}://example.com`,
+  );
+
+  if (defaults.security) {
+    fakeUrl.searchParams.set("security", defaults.security);
+  }
+
+  const wsOpts = getNestedObjectField(proxy, "ws-opts");
+  const realityOpts = getNestedObjectField(proxy, "reality-opts");
+  const host =
+    defaults.host ??
+    getStringField(proxy, "ws-headers-host", "host") ??
+    (wsOpts ? getStringField(wsOpts, "host") : undefined) ??
+    (wsOpts && isJsonObject(wsOpts.headers)
+      ? getStringField(wsOpts.headers as Record<string, unknown>, "Host", "host")
+      : undefined);
+  const sni = defaults.sni ?? getStringField(proxy, "servername", "serverName", "sni");
+  const fingerprint = defaults.fingerprint ?? getStringField(proxy, "client-fingerprint", "fingerprint");
+  const alpn = defaults.alpn ?? toArrayField(proxy, "alpn")?.join(",");
+  const insecure = defaults.insecure ?? String(getBooleanField(proxy, "skip-cert-verify", "insecure") ?? false);
+  const publicKey =
+    defaults.publicKey ??
+    getStringField(proxy, "reality-opts-public-key", "public-key") ??
+    (realityOpts ? getStringField(realityOpts, "public-key") : undefined);
+  const shortId =
+    defaults.shortId ??
+    getStringField(proxy, "reality-opts-short-id", "short-id") ??
+    (realityOpts ? getStringField(realityOpts, "short-id") : undefined);
+
+  return buildTls(fakeUrl, {
+    security: defaults.security,
+    host,
+    sni,
+    fingerprint,
+    alpn,
+    insecure,
+    publicKey,
+    shortId,
+  });
+}
+
+function buildTransportFromClashProxy(proxy: Record<string, unknown>): JsonObject | undefined {
+  const network = getStringField(proxy, "network");
+  const wsOpts = getNestedObjectField(proxy, "ws-opts");
+  const grpcOpts = getNestedObjectField(proxy, "grpc-opts");
+  const h2Opts = getNestedObjectField(proxy, "h2-opts");
+  const wsHeaders = wsOpts && isJsonObject(wsOpts.headers)
+    ? (wsOpts.headers as Record<string, unknown>)
+    : undefined;
+  const host =
+    getStringField(proxy, "ws-headers-host", "host") ??
+    (wsOpts ? getStringField(wsOpts, "host") : undefined) ??
+    (wsHeaders ? getStringField(wsHeaders, "Host", "host") : undefined);
+  const path =
+    getStringField(proxy, "ws-path", "path") ??
+    (wsOpts ? getStringField(wsOpts, "path") : undefined) ??
+    (h2Opts ? getStringField(h2Opts, "path") : undefined);
+  const grpcServiceName =
+    getStringField(proxy, "grpc-service-name") ??
+    (grpcOpts ? getStringField(grpcOpts, "grpc-service-name") : undefined);
+
+  const fakeUrl = new URL("https://example.com");
+  if (network) {
+    fakeUrl.searchParams.set("type", network);
+  }
+  if (host) {
+    fakeUrl.searchParams.set("host", host);
+  }
+  if (path) {
+    fakeUrl.searchParams.set("path", path);
+  }
+  if (grpcServiceName) {
+    fakeUrl.searchParams.set("serviceName", grpcServiceName);
+  }
+
+  return buildTransport(fakeUrl, {
+    network,
+    host,
+    path,
+    serviceName: grpcServiceName,
+  });
+}
+
+function parseClashProxy(proxy: Record<string, unknown>): SingBoxOutbound | null {
+  const clashType = getStringField(proxy, "type")?.toLowerCase();
+  const tag = getStringField(proxy, "name") ?? "clash-node";
+  const server = getStringField(proxy, "server");
+  const serverPort = getNumberField(proxy, "port");
+
+  if (!clashType || !server || !serverPort) {
+    return null;
+  }
+
+  switch (clashType) {
+    case "ss": {
+      const method = getStringField(proxy, "cipher");
+      const password = getStringField(proxy, "password");
+      if (!method || !password) {
+        return null;
+      }
+      return {
+        type: "shadowsocks",
+        tag,
+        server,
+        server_port: serverPort,
+        method,
+        password,
+      };
+    }
+    case "vmess": {
+      const uuid = getStringField(proxy, "uuid");
+      if (!uuid) {
+        return null;
+      }
+      const outbound: SingBoxOutbound = {
+        type: "vmess",
+        tag,
+        server,
+        server_port: serverPort,
+        uuid,
+        security: getStringField(proxy, "cipher") ?? "auto",
+        alter_id: getNumberField(proxy, "alterId", "alter-id") ?? 0,
+      };
+      const tls = buildTlsFromClashProxy(proxy, {
+        security: getBooleanField(proxy, "tls") ? "tls" : undefined,
+      });
+      if (tls) {
+        outbound.tls = tls;
+      }
+      const transport = buildTransportFromClashProxy(proxy);
+      if (transport) {
+        outbound.transport = transport;
+      }
+      return outbound;
+    }
+    case "vless": {
+      const uuid = getStringField(proxy, "uuid");
+      if (!uuid) {
+        return null;
+      }
+      const outbound: SingBoxOutbound = {
+        type: "vless",
+        tag,
+        server,
+        server_port: serverPort,
+        uuid,
+      };
+      const flow = getStringField(proxy, "flow");
+      if (flow) {
+        outbound.flow = flow;
+      }
+      const packetEncoding = getStringField(proxy, "packet-encoding", "packet_encoding");
+      if (packetEncoding) {
+        outbound.packet_encoding = packetEncoding;
+      }
+      const tls = buildTlsFromClashProxy(proxy, {
+        security: getBooleanField(proxy, "tls") ? "tls" : getStringField(proxy, "reality-opts-public-key") ? "reality" : undefined,
+      });
+      if (tls) {
+        outbound.tls = tls;
+      }
+      const transport = buildTransportFromClashProxy(proxy);
+      if (transport) {
+        outbound.transport = transport;
+      }
+      return outbound;
+    }
+    case "trojan": {
+      const password = getStringField(proxy, "password");
+      if (!password) {
+        return null;
+      }
+      const outbound: SingBoxOutbound = {
+        type: "trojan",
+        tag,
+        server,
+        server_port: serverPort,
+        password,
+      };
+      const tls = buildTlsFromClashProxy(proxy, { security: "tls" });
+      if (tls) {
+        outbound.tls = tls;
+      }
+      const transport = buildTransportFromClashProxy(proxy);
+      if (transport) {
+        outbound.transport = transport;
+      }
+      return outbound;
+    }
+    case "hysteria2":
+    case "hy2": {
+      const password = getStringField(proxy, "password");
+      if (!password) {
+        return null;
+      }
+      const outbound: SingBoxOutbound = {
+        type: "hysteria2",
+        tag,
+        server,
+        server_port: serverPort,
+        password,
+      };
+      const obfs = getStringField(proxy, "obfs");
+      const obfsPassword = getStringField(proxy, "obfs-password", "obfs-password");
+      if (obfs && obfsPassword) {
+        outbound.obfs = { type: obfs, password: obfsPassword };
+      }
+      const tls = buildTlsFromClashProxy(proxy, { security: "tls" });
+      if (tls) {
+        outbound.tls = tls;
+      }
+      return outbound;
+    }
+    case "tuic": {
+      const uuid = getStringField(proxy, "uuid");
+      const password = getStringField(proxy, "password");
+      if (!uuid || !password) {
+        return null;
+      }
+      const outbound: SingBoxOutbound = {
+        type: "tuic",
+        tag,
+        server,
+        server_port: serverPort,
+        uuid,
+        password,
+        congestion_control: getStringField(proxy, "congestion-controller", "congestion_control") ?? "bbr",
+      };
+      const udpRelayMode = getStringField(proxy, "udp-relay-mode", "udp_relay_mode");
+      if (udpRelayMode) {
+        outbound.udp_relay_mode = udpRelayMode;
+      }
+      const tls = buildTlsFromClashProxy(proxy, { security: "tls" });
+      if (tls) {
+        outbound.tls = tls;
+      }
+      return outbound;
+    }
+    case "socks5":
+    case "socks": {
+      const outbound: SingBoxOutbound = {
+        type: "socks",
+        tag,
+        server,
+        server_port: serverPort,
+      };
+      const username = getStringField(proxy, "username", "user");
+      const password = getStringField(proxy, "password");
+      if (username) {
+        outbound.username = username;
+      }
+      if (password) {
+        outbound.password = password;
+      }
+      return outbound;
+    }
+    case "http": {
+      const outbound: SingBoxOutbound = {
+        type: "http",
+        tag,
+        server,
+        server_port: serverPort,
+      };
+      const username = getStringField(proxy, "username", "user");
+      const password = getStringField(proxy, "password");
+      if (username) {
+        outbound.username = username;
+      }
+      if (password) {
+        outbound.password = password;
+      }
+      if (getBooleanField(proxy, "tls")) {
+        outbound.tls = { enabled: true };
+      }
+      return outbound;
+    }
+    default:
+      return null;
+  }
+}
+
+function extractOutboundsFromClashYaml(content: string): SingBoxOutbound[] {
+  const parsed = YAML.parse(content) as unknown;
+  if (!isJsonObject(parsed) || !Array.isArray(parsed.proxies)) {
+    return [];
+  }
+
+  return parsed.proxies
+    .map((item) =>
+      typeof item === "object" && item !== null && !Array.isArray(item)
+        ? parseClashProxy(item as Record<string, unknown>)
+        : null,
+    )
+    .filter((item): item is SingBoxOutbound => Boolean(item));
+}
+
 export function parseSubscriptionPayload(payload: string, channel: VersionChannel): SingBoxOutbound[] {
   const content = payload.trim();
   if (!content) {
@@ -522,7 +904,13 @@ export function parseSubscriptionPayload(payload: string, channel: VersionChanne
   }
 
   if (isLikelyClashYaml(content)) {
-    throw new Error("当前 MVP 暂不支持 Clash YAML 订阅，请先转换为 URI/Base64 或 sing-box JSON。");
+    const outbounds = extractOutboundsFromClashYaml(content).map((outbound) =>
+      applyDialHints(outbound, channel),
+    );
+    if (outbounds.length > 0) {
+      return outbounds;
+    }
+    throw new Error("Clash/YAML 内容存在，但未能解析出可用 proxies。");
   }
 
   if (!content.includes("://")) {

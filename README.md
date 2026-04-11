@@ -25,7 +25,12 @@
 - 支持输入格式：
   - 远程订阅 URL
   - base64 订阅文本
+  - Clash YAML（`proxies`）
   - sing-box JSON（`outbounds` 或 outbound 数组）
+- 支持远程模板：
+  - `template_url`
+  - `template_raw`
+  - `template_raw_base64=1`
 - 暴露 Worker 接口：
   - `/health`
   - `/profiles`
@@ -48,7 +53,9 @@
 
 - **内建 profile 生成器**，而不是把模板文件系统照搬进 Worker
 - **协议 URI -> sing-box outbound** 的直接转换
+- **Clash/YAML proxies -> sing-box outbound** 的转换
 - **版本差异收敛到 profile/channel**，而不是在单份模板里塞大量条件分支
+- **远程 JSON 模板 + 占位符渲染**，而不是引入复杂服务端模板编辑流
 
 ## profile 说明
 
@@ -96,6 +103,7 @@ npm run deploy
 - `DEFAULT_VERSION`: 默认版本，默认 `1.12.0`
 - `DEFAULT_SUBSCRIPTION_URL`: 默认订阅地址
 - `DEFAULT_USER_AGENT`: 拉取订阅时使用的 UA
+- `DEFAULT_TEMPLATE_URL`: 默认远程模板地址
 - `CORS_ORIGIN`: 允许跨域的源
 
 ## API
@@ -117,6 +125,9 @@ npm run deploy
 - `url`: 一个或多个订阅 URL，支持 `,` 或 `|` 分隔
 - `raw`: 直接传入订阅内容
 - `raw_base64=1`: 表示 `raw` 需要先做 base64 解码
+- `template_url`: 远程 JSON 模板地址
+- `template_raw`: 直接传入 JSON 模板内容
+- `template_raw_base64=1`: 表示 `template_raw` 需要先做 base64 解码
 - `include`: 只保留匹配此正则的节点 tag
 - `exclude`: 排除匹配此正则的节点 tag
 - `ua`: 拉取订阅时使用的 User-Agent
@@ -132,12 +143,46 @@ npm run deploy
 /convert?device=ios&version=1.11.8&raw_base64=1&raw=<base64_subscription>
 ```
 
+```text
+/convert?device=pc&version=1.12.0&url=https://example.com/clash.yaml&template_url=https://example.com/template.json
+```
+
+## 远程模板占位符
+
+当前远程模板要求是合法 JSON，支持以下占位符字符串：
+
+- `{{ Nodes }}`: 仅节点 outbounds
+- `{{ NodeTags }}` / `{{ NodeNames }}`
+- `{{ ProfileId }}`
+- `{{ Device }}`
+- `{{ VersionChannel }}`
+- `{{ NodeCount }}`
+- `{{ Dns }}`
+- `{{ Inbounds }}`
+- `{{ SelectorOutbounds }}`
+- `{{ AllOutbounds }}`
+- `{{ Route }}`
+- `{{ Experimental }}`
+
+示例：
+
+```json
+{
+  "dns": "{{ Dns }}",
+  "inbounds": "{{ Inbounds }}",
+  "outbounds": "{{ AllOutbounds }}",
+  "route": "{{ Route }}",
+  "meta": {
+    "profile": "{{ ProfileId }}",
+    "count": "{{ NodeCount }}"
+  }
+}
+```
+
 ## 当前明确未做
 
 为了先把 Workers 版本做稳，这一版还没有实现：
 
-- Clash YAML 订阅解析
-- 远程自定义模板拉取与缓存
 - KV / Cache API 缓存层
 - 定时刷新与预热
 - 节点国家分组、复杂 selector 规则生成
