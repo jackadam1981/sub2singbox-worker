@@ -17,15 +17,23 @@ import {
   toClashProxy,
 } from "./lib/clash";
 import { buildRenderContext, buildSingBoxConfig } from "./lib/config";
+import { AppError, toErrorResponseBody } from "./lib/errors";
 import { fetchText } from "./lib/http";
 import { listProfiles, resolveProfile } from "./lib/profiles";
 import {
   dedupeAndNormalizeOutbounds,
   filterOutbounds,
+  inspectSubscriptionPayload,
   parseSubscriptionPayload,
 } from "./lib/subscription";
 import { renderTemplate } from "./lib/template";
-import type { BuiltinTemplateDefinition, WorkerEnv } from "./lib/types";
+import type {
+  BuiltinTemplateDefinition,
+  ConversionExplain,
+  JsonObject,
+  SourceDebugEntry,
+  WorkerEnv,
+} from "./lib/types";
 
 type OutputFormat = "sing-box" | "clash" | "clash-provider";
 
@@ -107,7 +115,15 @@ async function resolvePayloads(
   requestUrl: URL,
   env: WorkerEnv,
 ): Promise<{
-  payloads: string[];
+  entries: Array<{
+    index: number;
+    source: string;
+    source_type: "raw" | "url";
+    fetch_status: "success" | "failed" | "skipped";
+    cache_state: string;
+    payload?: string;
+    error?: string;
+  }>;
   cacheState: string;
   sourceStats: {
     total: number;
@@ -126,7 +142,16 @@ async function resolvePayloads(
         throw new Error("raw_base64=1 但 raw 不是有效 base64");
       }
       return {
-        payloads: [decoded],
+        entries: [
+          {
+            index: 0,
+            source: "raw",
+            source_type: "raw",
+            fetch_status: "success",
+            cache_state: "raw",
+            payload: decoded,
+          },
+        ],
         cacheState: "raw",
         sourceStats: {
           total: 1,
@@ -139,7 +164,16 @@ async function resolvePayloads(
     }
 
     return {
-      payloads: [rawInput],
+      entries: [
+        {
+          index: 0,
+          source: "raw",
+          source_type: "raw",
+          fetch_status: "success",
+          cache_state: "raw",
+          payload: rawInput,
+        },
+      ],
       cacheState: "raw",
       sourceStats: {
         total: 1,
@@ -166,7 +200,7 @@ async function resolvePayloads(
   const bypassFreshCache = shouldBypassCache(requestUrl);
   const strictMode = isStrictSourceMode(requestUrl);
   const settled = await Promise.all(
-    sourceUrls.map(async (sourceUrl) => {
+    sourceUrls.map(async (sourceUrl, index) => {
       try {
         const cached = await getCachedRemoteText(env, {
           key: getRemoteResourceCacheKey("subscription", sourceUrl),
@@ -177,46 +211,71 @@ async function resolvePayloads(
               fallbackUserAgent,
             }),
         });
-        return { ok: true as const, url: sourceUrl, cached };
+        return {
+          ok: true as const,
+          entry: {
+            index,
+            source: sourceUrl,
+            source_type: "url" as const,
+            fetch_status: "success" as const,
+            cache_state: cached.source,
+            payload: cached.value,
+          },
+        };
       } catch (error) {
         return {
           ok: false as const,
-          url: sourceUrl,
-          error: error instanceof Error ? error.message : "未知错误",
+          entry: {
+            index,
+            source: sourceUrl,
+            source_type: "url" as const,
+            fetch_status: "failed" as const,
+            cache_state: "error",
+            error: error instanceof Error ? error.message : "未知错误",
+          },
         };
       }
     }),
   );
 
-  const successes = settled.filter(
-    (item): item is { ok: true; url: string; cached: { value: string; source: "network" | "cache-fresh" | "cache-stale" } } =>
-      item.ok,
-  );
-  const failures = settled.filter(
-    (item): item is { ok: false; url: string; error: string } => !item.ok,
-  );
+  const successes = settled.filter((item) => item.ok);
+  const failures = settled.filter((item) => !item.ok);
 
   if (strictMode && failures.length > 0) {
-    throw new Error(
-      `存在订阅源拉取失败（strict 模式）：${failures.map((item) => `${item.url} -> ${item.error}`).join(" | ")}`,
-    );
+    throw new AppError({
+      stage: "fetch-subscription",
+      code: "STRICT_SOURCE_FAILURE",
+      message: `存在订阅源拉取失败（strict 模式）：${failures.map((item) => `${item.entry.source} -> ${item.entry.error}`).join(" | ")}`,
+      detail: failures.map((item) => ({
+        source: item.entry.source,
+        error: item.entry.error,
+      })),
+    });
   }
 
   if (successes.length === 0) {
-    throw new Error(
-      `所有订阅源均拉取失败：${failures.map((item) => `${item.url} -> ${item.error}`).join(" | ")}`,
-    );
+    throw new AppError({
+      stage: "fetch-subscription",
+      code: "ALL_SOURCES_FAILED",
+      message: `所有订阅源均拉取失败：${failures.map((item) => `${item.entry.source} -> ${item.entry.error}`).join(" | ")}`,
+      detail: failures.map((item) => ({
+        source: item.entry.source,
+        error: item.entry.error,
+      })),
+    });
   }
 
   return {
-    payloads: successes.map((result) => result.cached.value),
-    cacheState: successes.map((result) => `${result.url}:${result.cached.source}`).join(","),
+    entries: [...successes.map((item) => item.entry), ...failures.map((item) => item.entry)].sort(
+      (a, b) => a.index - b.index,
+    ),
+    cacheState: successes.map((result) => `${result.entry.source}:${result.entry.cache_state}`).join(","),
     sourceStats: {
       total: sourceUrls.length,
       succeeded: successes.length,
       failed: failures.length,
       mode: strictMode ? "strict" : "tolerant",
-      errors: failures.map((item) => `${item.url} -> ${item.error}`),
+      errors: failures.map((item) => `${item.entry.source} -> ${item.entry.error}`),
     },
   };
 }
@@ -234,7 +293,14 @@ async function resolveTemplate(
     const templateId = selectedTemplate.slice("builtin:".length).trim();
     const builtinTemplate = getBuiltinTemplate(templateId);
     if (!builtinTemplate) {
-      throw new Error(`未找到内建模板: ${templateId}`);
+      throw new AppError({
+        stage: "template",
+        code: "BUILTIN_TEMPLATE_NOT_FOUND",
+        message: `未找到内建模板: ${templateId}`,
+        detail: {
+          template_id: templateId,
+        },
+      });
     }
     return {
       template: builtinTemplate.template_text,
@@ -295,41 +361,236 @@ function resolveOutputFormat(requestUrl: URL): OutputFormat {
   }
 }
 
-async function handleConvert(request: Request, env: WorkerEnv): Promise<Response> {
-  const url = new URL(request.url);
-  if (!isAuthorized(url, request, env)) {
-    return jsonResponse(
-      {
-        ok: false,
-        error: "认证失败，请提供正确的 password / token。",
-      },
-      env,
-      401,
-    );
+function summarizeTemplateMode(
+  templateResult: Awaited<ReturnType<typeof resolveTemplate>>,
+): "builtin" | "remote" | "raw" | "none" {
+  if (templateResult.builtinTemplate) {
+    return "builtin";
+  }
+  if (!templateResult.template) {
+    return "none";
+  }
+  if (templateResult.cacheState === "raw") {
+    return "raw";
+  }
+  return "remote";
+}
+
+function buildSourceDebugEntries(
+  entries: Awaited<ReturnType<typeof resolvePayloads>>["entries"],
+  channel: "legacy" | "modern",
+  strictMode: boolean,
+): { debugEntries: SourceDebugEntry[]; parsedOutbounds: ReturnType<typeof dedupeAndNormalizeOutbounds> } {
+  const debugEntries: SourceDebugEntry[] = [];
+  const parsedOutbounds = [];
+  const parseFailures: SourceDebugEntry[] = [];
+
+  for (const entry of entries) {
+    if (entry.fetch_status !== "success" || !entry.payload) {
+      debugEntries.push({
+        index: entry.index,
+        source: entry.source,
+        source_type: entry.source_type,
+        fetch_status: entry.fetch_status,
+        parse_status: "skipped",
+        cache_state: entry.cache_state,
+        ...(entry.error ? { error: entry.error } : {}),
+      });
+      continue;
+    }
+
+    const payloadKind = inspectSubscriptionPayload(entry.payload);
+    try {
+      const outbounds = parseSubscriptionPayload(entry.payload, channel);
+      parsedOutbounds.push(...outbounds);
+      debugEntries.push({
+        index: entry.index,
+        source: entry.source,
+        source_type: entry.source_type,
+        fetch_status: "success",
+        parse_status: "success",
+        cache_state: entry.cache_state,
+        payload_kind: payloadKind,
+        parsed_outbounds: outbounds.length,
+      });
+    } catch (error) {
+      const debugEntry: SourceDebugEntry = {
+        index: entry.index,
+        source: entry.source,
+        source_type: entry.source_type,
+        fetch_status: "success",
+        parse_status: "failed",
+        cache_state: entry.cache_state,
+        payload_kind: payloadKind,
+        error: error instanceof Error ? error.message : "未知错误",
+      };
+      debugEntries.push(debugEntry);
+      parseFailures.push(debugEntry);
+    }
   }
 
+  if (strictMode && parseFailures.length > 0) {
+    throw new AppError({
+      stage: "parse-subscription",
+      code: "STRICT_PARSE_FAILURE",
+      message: `存在订阅源解析失败（strict 模式）：${parseFailures.map((item) => `${item.source} -> ${item.error}`).join(" | ")}`,
+      detail: parseFailures as unknown as JsonObject,
+    });
+  }
+
+  if (parsedOutbounds.length === 0) {
+    throw new AppError({
+      stage: "parse-subscription",
+      code: "NO_PARSEABLE_OUTBOUNDS",
+      message: "没有从输入源中解析出任何可用节点。",
+      detail: debugEntries as unknown as JsonObject,
+    });
+  }
+
+  return {
+    debugEntries,
+    parsedOutbounds,
+  };
+}
+
+async function analyzeConversion(
+  request: Request,
+  env: WorkerEnv,
+): Promise<{
+  profile: ReturnType<typeof resolveProfile>;
+  outputFormat: OutputFormat;
+  filteredOutbounds: ReturnType<typeof dedupeAndNormalizeOutbounds>;
+  supportedClashNodes: ReturnType<typeof dedupeAndNormalizeOutbounds>;
+  templateResult: Awaited<ReturnType<typeof resolveTemplate>>;
+  payloadResult: Awaited<ReturnType<typeof resolvePayloads>>;
+  debugEntries: SourceDebugEntry[];
+  explain: ConversionExplain;
+}> {
+  const url = new URL(request.url);
   const requestedDevice = url.searchParams.get("device") ?? env.DEFAULT_DEVICE ?? "openwrt";
   const requestedVersion = url.searchParams.get("version") ?? env.DEFAULT_VERSION ?? "1.12.0";
-  const profile = resolveProfile(requestedDevice, requestedVersion);
+  let profile;
+  try {
+    profile = resolveProfile(requestedDevice, requestedVersion);
+  } catch (error) {
+    throw new AppError({
+      stage: "profile",
+      code: "PROFILE_RESOLUTION_FAILED",
+      message: error instanceof Error ? error.message : "无法解析 profile",
+      detail: {
+        device: requestedDevice,
+        version: requestedVersion,
+      },
+    });
+  }
 
+  const outputFormat = resolveOutputFormat(url);
+  const strictMode = isStrictSourceMode(url);
   const payloadResult = await resolvePayloads(url, env);
-  const parsedOutbounds = payloadResult.payloads.flatMap((payload) =>
-    parseSubscriptionPayload(payload, profile.channel),
+  const { debugEntries, parsedOutbounds } = buildSourceDebugEntries(
+    payloadResult.entries,
+    profile.channel,
+    strictMode,
   );
 
+  const dedupedOutbounds = dedupeAndNormalizeOutbounds(parsedOutbounds);
   const filteredOutbounds = filterOutbounds(
-    dedupeAndNormalizeOutbounds(parsedOutbounds),
+    dedupedOutbounds,
     url.searchParams.get("include"),
     url.searchParams.get("exclude"),
   );
+  const supportedClashNodes = filteredOutbounds.filter(
+    (outbound) => toClashProxy(outbound) !== null,
+  );
 
-  const outputFormat = resolveOutputFormat(url);
-  const hasRemoteTemplate =
-    (url.searchParams.has("template") &&
-      url.searchParams.get("template")?.startsWith("builtin:") !== true) ||
-    url.searchParams.has("template_url") ||
-    url.searchParams.has("template_raw") ||
-    Boolean(env.DEFAULT_TEMPLATE_URL);
+  if (filteredOutbounds.length === 0) {
+    throw new AppError({
+      stage: "output",
+      code: "ALL_NODES_FILTERED_OUT",
+      message: "过滤后没有剩余节点。",
+      detail: {
+        include: url.searchParams.get("include"),
+        exclude: url.searchParams.get("exclude"),
+      },
+    });
+  }
+
+  if (outputFormat !== "sing-box" && supportedClashNodes.length === 0) {
+    throw new AppError({
+      stage: "output",
+      code: "NO_CLASH_COMPATIBLE_NODES",
+      message: "当前节点中没有可转换为 Clash 的代理类型。",
+    });
+  }
+
+  const templateResult = await resolveTemplate(url, env);
+  const explain: ConversionExplain = {
+    profile: {
+      id: profile.id,
+      device: profile.device,
+      channel: profile.channel,
+    },
+    output_format: outputFormat,
+    template: {
+      mode: summarizeTemplateMode(templateResult),
+      cache_state: templateResult.cacheState,
+      ...(templateResult.builtinTemplate
+        ? { id: templateResult.builtinTemplate.id }
+        : {}),
+    },
+    sources: {
+      total: payloadResult.sourceStats.total,
+      succeeded: payloadResult.sourceStats.succeeded,
+      failed: payloadResult.sourceStats.failed,
+      mode: payloadResult.sourceStats.mode,
+      entries: debugEntries,
+    },
+    nodes: {
+      parsed_total: parsedOutbounds.length,
+      deduped_total: dedupedOutbounds.length,
+      filtered_total: filteredOutbounds.length,
+      clash_compatible_total: supportedClashNodes.length,
+      tags: filteredOutbounds.map((item) => item.tag),
+    },
+    cache: {
+      result: "analysis",
+      subscription: payloadResult.cacheState,
+      template: templateResult.cacheState,
+    },
+  };
+
+  return {
+    profile,
+    outputFormat,
+    filteredOutbounds,
+    supportedClashNodes,
+    templateResult,
+    payloadResult,
+    debugEntries,
+    explain,
+  };
+}
+
+async function handleConvert(request: Request, env: WorkerEnv): Promise<Response> {
+  const url = new URL(request.url);
+  if (!isAuthorized(url, request, env)) {
+    throw new AppError({
+      stage: "auth",
+      code: "UNAUTHORIZED",
+      status: 401,
+      message: "认证失败，请提供正确的 password / token。",
+    });
+  }
+  const analysis = await analyzeConversion(request, env);
+  const {
+    profile,
+    outputFormat,
+    filteredOutbounds,
+    supportedClashNodes,
+    templateResult,
+    payloadResult,
+  } = analysis;
+  const hasRemoteTemplate = summarizeTemplateMode(templateResult) === "remote";
   const resultCacheEnabled =
     (outputFormat === "sing-box" && !hasRemoteTemplate) ||
     outputFormat === "clash" ||
@@ -362,11 +623,17 @@ async function handleConvert(request: Request, env: WorkerEnv): Promise<Response
             "cache-control": "no-store",
             "x-profile-id": profile.id,
             "x-node-count": String(filteredOutbounds.length),
-            "x-template-mode": hasRemoteTemplate ? "remote" : "builtin",
+            "x-template-mode":
+              templateResult.builtinTemplate || !templateResult.template
+                ? "builtin"
+                : "remote",
+            ...(templateResult.builtinTemplate
+              ? { "x-template-id": templateResult.builtinTemplate.id }
+              : {}),
             "x-output-format": outputFormat,
             "x-cache-result": "hit",
-            "x-cache-subscription": subscriptionCacheState,
-            "x-cache-template": templateCacheState,
+            "x-cache-subscription": payloadResult.cacheState,
+            "x-cache-template": templateResult.cacheState,
             "x-source-total": String(payloadResult.sourceStats.total),
             "x-source-succeeded": String(payloadResult.sourceStats.succeeded),
             "x-source-failed": String(payloadResult.sourceStats.failed),
@@ -383,8 +650,8 @@ async function handleConvert(request: Request, env: WorkerEnv): Promise<Response
           "x-node-count": String(filteredOutbounds.length),
           "x-output-format": outputFormat,
           "x-cache-result": "hit",
-          "x-cache-subscription": subscriptionCacheState,
-          "x-cache-template": templateCacheState,
+          "x-cache-subscription": payloadResult.cacheState,
+          "x-cache-template": templateResult.cacheState,
           "x-source-total": String(payloadResult.sourceStats.total),
           "x-source-succeeded": String(payloadResult.sourceStats.succeeded),
           "x-source-failed": String(payloadResult.sourceStats.failed),
@@ -394,15 +661,13 @@ async function handleConvert(request: Request, env: WorkerEnv): Promise<Response
     }
   }
 
-  const supportedClashNodes = filteredOutbounds.filter((outbound) => toClashProxy(outbound) !== null);
-
   if (outputFormat !== "sing-box") {
     if (url.searchParams.has("template_url") || url.searchParams.has("template_raw")) {
-      throw new Error("Clash 输出暂不支持 template_url / template_raw，请使用内建 Clash 输出。");
-    }
-
-    if (supportedClashNodes.length === 0) {
-      throw new Error("当前节点中没有可转换为 Clash 的代理类型。");
+      throw new AppError({
+        stage: "output",
+        code: "CLASH_TEMPLATE_UNSUPPORTED",
+        message: "Clash 输出暂不支持 template_url / template_raw，请使用内建 Clash 输出。",
+      });
     }
 
     const body =
@@ -423,8 +688,8 @@ async function handleConvert(request: Request, env: WorkerEnv): Promise<Response
         "x-output-format": outputFormat,
         "x-supported-node-count": String(supportedClashNodes.length),
         "x-cache-result": resultCacheState,
-        "x-cache-subscription": subscriptionCacheState,
-        "x-cache-template": templateCacheState,
+        "x-cache-subscription": payloadResult.cacheState,
+        "x-cache-template": templateResult.cacheState,
         "x-source-total": String(payloadResult.sourceStats.total),
         "x-source-succeeded": String(payloadResult.sourceStats.succeeded),
         "x-source-failed": String(payloadResult.sourceStats.failed),
@@ -433,13 +698,21 @@ async function handleConvert(request: Request, env: WorkerEnv): Promise<Response
     });
   }
 
-  const templateResult = await resolveTemplate(url, env);
-  const config = templateResult.template
-    ? renderTemplate(
-        templateResult.template,
-        buildRenderContext(profile, filteredOutbounds),
-      )
-    : buildSingBoxConfig(profile, filteredOutbounds);
+  let config;
+  try {
+    config = templateResult.template
+      ? renderTemplate(
+          templateResult.template,
+          buildRenderContext(profile, filteredOutbounds),
+        )
+      : buildSingBoxConfig(profile, filteredOutbounds);
+  } catch (error) {
+    throw new AppError({
+      stage: "template-render",
+      code: "TEMPLATE_RENDER_FAILED",
+      message: error instanceof Error ? error.message : "模板渲染失败",
+    });
+  }
   const body = JSON.stringify(config, null, 2);
 
   if (resultCacheKey && !hasRemoteTemplate) {
@@ -516,12 +789,99 @@ function handleTemplates(env: WorkerEnv): Response {
   );
 }
 
+async function handleValidate(request: Request, env: WorkerEnv): Promise<Response> {
+  const url = new URL(request.url);
+  if (!isAuthorized(url, request, env)) {
+    throw new AppError({
+      stage: "auth",
+      code: "UNAUTHORIZED",
+      status: 401,
+      message: "认证失败，请提供正确的 password / token。",
+    });
+  }
+
+  const analysis = await analyzeConversion(request, env);
+  return jsonResponse(
+    {
+      ok: true,
+      valid: true,
+      profile: analysis.explain.profile,
+      output_format: analysis.explain.output_format,
+      template: analysis.explain.template,
+      sources: {
+        total: analysis.explain.sources.total,
+        succeeded: analysis.explain.sources.succeeded,
+        failed: analysis.explain.sources.failed,
+        mode: analysis.explain.sources.mode,
+      },
+      nodes: analysis.explain.nodes,
+      checks: {
+        can_render_singbox: true,
+        can_render_clash:
+          analysis.outputFormat === "sing-box" ||
+          analysis.explain.nodes.clash_compatible_total > 0,
+      },
+    },
+    env,
+  );
+}
+
+async function handleExplain(request: Request, env: WorkerEnv): Promise<Response> {
+  const url = new URL(request.url);
+  if (!isAuthorized(url, request, env)) {
+    throw new AppError({
+      stage: "auth",
+      code: "UNAUTHORIZED",
+      status: 401,
+      message: "认证失败，请提供正确的 password / token。",
+    });
+  }
+
+  const includeRendered =
+    url.searchParams.get("include_rendered") === "1" ||
+    url.searchParams.get("rendered") === "1";
+  const analysis = await analyzeConversion(request, env);
+
+  let rendered: JsonObject | string | undefined;
+  if (includeRendered) {
+    if (analysis.outputFormat === "sing-box") {
+      try {
+        rendered = analysis.templateResult.template
+          ? renderTemplate(
+              analysis.templateResult.template,
+              buildRenderContext(analysis.profile, analysis.filteredOutbounds),
+            )
+          : buildSingBoxConfig(analysis.profile, analysis.filteredOutbounds);
+      } catch (error) {
+        throw new AppError({
+          stage: "template-render",
+          code: "TEMPLATE_RENDER_FAILED",
+          message: error instanceof Error ? error.message : "模板渲染失败",
+        });
+      }
+    } else if (analysis.outputFormat === "clash") {
+      rendered = buildClashConfigDocument(analysis.filteredOutbounds);
+    } else {
+      rendered = buildClashProviderDocument(analysis.filteredOutbounds);
+    }
+  }
+
+  return jsonResponse(
+    {
+      ok: true,
+      explain: analysis.explain,
+      ...(includeRendered ? { rendered } : {}),
+    },
+    env,
+  );
+}
+
 function handleRoot(env: WorkerEnv): Response {
   return jsonResponse(
     {
       ok: true,
       service: "sub2singbox-worker",
-      endpoints: ["/health", "/profiles", "/convert"],
+      endpoints: ["/health", "/profiles", "/templates", "/validate", "/explain", "/convert"],
       example:
         "/convert?device=openwrt&version=1.12.0&url=https://example.com/sub.txt&template_url=https://example.com/template.json",
     },
@@ -549,6 +909,10 @@ export default {
           return handleTemplates(env);
         case "/profiles":
           return handleProfiles(env);
+        case "/validate":
+          return await handleValidate(request, env);
+        case "/explain":
+          return await handleExplain(request, env);
         case "/convert":
           return await handleConvert(request, env);
         default:
@@ -562,14 +926,9 @@ export default {
           );
       }
     } catch (error) {
-      return jsonResponse(
-        {
-          ok: false,
-          error: error instanceof Error ? error.message : "未知错误",
-        },
-        env,
-        400,
-      );
+      const body = toErrorResponseBody(error);
+      const status = error instanceof AppError ? error.status : 400;
+      return jsonResponse(body, env, status);
     }
   },
 };

@@ -44,6 +44,8 @@
   - `/health`
   - `/profiles`
   - `/templates`
+  - `/validate`
+  - `/explain`
   - `/convert`
 
 ## 设计取向
@@ -132,6 +134,34 @@ npm run deploy
 
 返回当前内建模板库列表与模板元数据。
 
+### `GET /validate`
+
+校验当前请求参数、输入源、模板和输出格式是否可正常转换，但不返回最终配置正文。
+
+适合：
+
+- 检查某个订阅链接是否还能用
+- 检查某个模板是否能被正确渲染
+- 做前端“测试连接/测试模板”按钮
+
+### `GET /explain`
+
+返回更详细的转换过程解释，包括：
+
+- profile 选择结果
+- 输出格式
+- 模板模式与模板来源
+- 输入源逐项 fetch/parse 结果
+- 节点统计
+- Clash 兼容数量
+
+可选参数：
+
+- `include_rendered=1`
+- `rendered=1`
+
+开启后会把最终渲染结果也一起返回。
+
 ### `GET /convert`
 
 查询参数：
@@ -176,6 +206,14 @@ npm run deploy
 
 ```text
 /convert?format=clash-provider&raw=ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ=@1.2.3.4:443#HK-SS
+```
+
+```text
+/validate?device=pc&version=1.13.7&url=https://example.com/sub.txt|https://backup.example.com/sub.txt
+```
+
+```text
+/explain?device=pc&version=1.13.7&template=builtin:manual&raw=ss://...&include_rendered=1
 ```
 
 ## Clash 输出说明
@@ -340,6 +378,58 @@ GET /templates
 ```text
 /convert?device=android&version=1.13.7&raw=ss://...&template=builtin:auto
 ```
+
+## 调试与可观测性
+
+### 结构化错误
+
+错误响应除了保留原有字符串 `error` 外，还会返回结构化字段：
+
+```json
+{
+  "ok": false,
+  "error": "存在订阅源拉取失败（strict 模式）：...",
+  "error_detail": {
+    "stage": "fetch-subscription",
+    "code": "STRICT_SOURCE_FAILURE",
+    "message": "存在订阅源拉取失败（strict 模式）：..."
+  }
+}
+```
+
+当前常见 `stage` 包括：
+
+- `auth`
+- `profile`
+- `fetch-subscription`
+- `parse-subscription`
+- `template`
+- `template-render`
+- `output`
+
+### `/validate`
+
+返回：
+
+- `valid`
+- `profile`
+- `output_format`
+- `template`
+- `sources`
+- `nodes`
+- `checks`
+
+### `/explain`
+
+返回更完整的解释对象：
+
+- 每个 source 的 fetch/parse 状态
+- source payload 类型（如 `uri-list`、`clash-json`、`clash-yaml`、`sing-box-yaml`）
+- 模板模式与模板 id
+- 过滤后的节点 tag 列表
+- Clash 兼容节点数量
+
+当带上 `include_rendered=1` 时，还会返回最终渲染结果。
 
 ## 远程模板占位符
 

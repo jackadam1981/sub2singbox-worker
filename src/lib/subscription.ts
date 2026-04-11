@@ -525,6 +525,48 @@ function isLikelyClashYaml(content: string): boolean {
   return /^proxies:\s*$/m.test(content) || /^proxy-groups:\s*$/m.test(content);
 }
 
+export function inspectSubscriptionPayload(payload: string): string {
+  const content = payload.trim();
+  if (!content) {
+    return "empty";
+  }
+
+  try {
+    const parsed = JSON.parse(content) as unknown;
+    if (Array.isArray(parsed)) {
+      return "sing-box-json-array";
+    }
+    if (isJsonObject(parsed)) {
+      if (Array.isArray(parsed.outbounds)) {
+        return "sing-box-json";
+      }
+      if (Array.isArray((parsed as JsonObject).proxies)) {
+        return "clash-json";
+      }
+      return "json";
+    }
+  } catch {
+    // ignore
+  }
+
+  if (isLikelyClashYaml(content)) {
+    return "clash-yaml";
+  }
+  if (/^outbounds:\s*$/m.test(content)) {
+    return "sing-box-yaml";
+  }
+  if (!content.includes("://")) {
+    const decoded = tryDecodeBase64(content);
+    if (decoded && decoded.trim() !== content) {
+      return `base64:${inspectSubscriptionPayload(decoded)}`;
+    }
+  }
+  if (content.includes("://")) {
+    return "uri-list";
+  }
+  return "unknown";
+}
+
 function getStringField(record: Record<string, unknown>, ...keys: string[]): string | undefined {
   for (const key of keys) {
     const value = record[key];

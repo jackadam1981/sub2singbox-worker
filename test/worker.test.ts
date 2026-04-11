@@ -125,6 +125,46 @@ describe("worker routes", () => {
     expect(data.templates.some((item) => item.id === "auto")).toBe(true);
   });
 
+  it("validates conversion inputs without rendering response body", async () => {
+    const rawContent = "ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ=@1.2.3.4:443#HK-SS";
+    const request = new Request(
+      `https://example.com/validate?device=openwrt&version=1.12.0&raw=${encodeURIComponent(rawContent)}`,
+    );
+    const response = await worker.fetch(request, {});
+    const data = (await response.json()) as {
+      valid: boolean;
+      profile: { id: string };
+      nodes: { filtered_total: number };
+    };
+
+    expect(response.status).toBe(200);
+    expect(data.valid).toBe(true);
+    expect(data.profile.id).toBe("openwrt-modern");
+    expect(data.nodes.filtered_total).toBe(1);
+  });
+
+  it("explains conversion pipeline details", async () => {
+    const rawContent = "ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ=@1.2.3.4:443#HK-SS";
+    const request = new Request(
+      `https://example.com/explain?device=pc&version=1.13.7&raw=${encodeURIComponent(rawContent)}`,
+    );
+    const response = await worker.fetch(request, {});
+    const data = (await response.json()) as {
+      explain: {
+        output_format: string;
+        sources: { total: number; entries: Array<{ payload_kind?: string }> };
+        nodes: { filtered_total: number; tags: string[] };
+      };
+    };
+
+    expect(response.status).toBe(200);
+    expect(data.explain.output_format).toBe("sing-box");
+    expect(data.explain.sources.total).toBe(1);
+    expect(data.explain.sources.entries[0].payload_kind).toContain("uri");
+    expect(data.explain.nodes.filtered_total).toBe(1);
+    expect(data.explain.nodes.tags).toContain("HK-SS");
+  });
+
   it("renders builtin template by id", async () => {
     const rawContent = "ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ=@1.2.3.4:443#HK-SS";
     const request = new Request(
@@ -206,10 +246,15 @@ describe("worker routes", () => {
         `https://example.com/convert?device=pc&version=1.13.7&strict=1&url=${encodeURIComponent(okUrl)}|${encodeURIComponent(badUrl)}`,
       );
       const response = await worker.fetch(request, {});
-      const data = (await response.json()) as { error: string };
+      const data = (await response.json()) as {
+        error: string;
+        error_detail: { stage: string; code: string };
+      };
 
       expect(response.status).toBe(400);
       expect(data.error).toContain("strict 模式");
+      expect(data.error_detail.stage).toBe("fetch-subscription");
+      expect(data.error_detail.code).toBe("STRICT_SOURCE_FAILURE");
     } finally {
       globalThis.fetch = originalFetch;
     }

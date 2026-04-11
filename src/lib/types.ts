@@ -40,6 +40,51 @@ export interface BuiltinTemplateDefinition {
   featured?: boolean;
 }
 
+export interface SourceDebugEntry {
+  index: number;
+  source: string;
+  source_type: "raw" | "url";
+  fetch_status: "success" | "failed" | "skipped";
+  parse_status: "success" | "failed" | "skipped";
+  cache_state: string;
+  payload_kind?: string;
+  parsed_outbounds?: number;
+  error?: string;
+}
+
+export interface ConversionExplain {
+  profile: {
+    id: string;
+    device: Device;
+    channel: VersionChannel;
+  };
+  output_format: string;
+  template: {
+    mode: "builtin" | "remote" | "raw" | "none";
+    cache_state: string;
+    id?: string;
+  };
+  sources: {
+    total: number;
+    succeeded: number;
+    failed: number;
+    mode: "strict" | "tolerant";
+    entries: SourceDebugEntry[];
+  };
+  nodes: {
+    parsed_total: number;
+    deduped_total: number;
+    filtered_total: number;
+    clash_compatible_total: number;
+    tags: string[];
+  };
+  cache: {
+    result: string;
+    subscription: string;
+    template: string;
+  };
+}
+
 export interface WorkerEnv {
   ACCESS_PASSWORD?: string;
   DEFAULT_DEVICE?: string;
