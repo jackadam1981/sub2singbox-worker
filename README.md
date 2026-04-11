@@ -287,6 +287,50 @@ npm run deploy
 }
 ```
 
+## 输入源增强
+
+### 多源策略
+
+当前支持一次传入多个订阅源，默认是**容错模式**：
+
+- 只要至少有一个源成功，就继续转换
+- 失败源会记录到统计信息里，但不会让整个请求失败
+
+如果你希望“任一源失败就整体失败”，可以使用：
+
+- `strict=1`
+- 或 `allow_partial=0`
+
+### 备用 UA
+
+当前支持：
+
+- `ua=...`
+- `fallback_ua=...`
+
+以及环境变量：
+
+- `DEFAULT_USER_AGENT`
+- `DEFAULT_FALLBACK_USER_AGENT`
+
+当上游返回 `401` 或 `403` 时，会自动尝试备用 UA。
+
+### 响应头
+
+为方便调试输入源状态，`/convert` 响应会返回：
+
+- `x-source-total`
+- `x-source-succeeded`
+- `x-source-failed`
+- `x-source-mode`
+
+### 当前额外兼容的输入格式
+
+除了 URI / base64 / Clash YAML 以外，还支持：
+
+- Clash JSON `proxies`
+- sing-box YAML `outbounds`
+
 ## 远程模板占位符
 
 当前远程模板要求是合法 JSON，支持以下占位符字符串：
