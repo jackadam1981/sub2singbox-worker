@@ -1,0 +1,34 @@
+{
+  "name": "sub2singbox-worker",
+  "version": "1.0.0",
+  "description": "sing-box-template-worker",
+  "type": "module",
+  "scripts": {
+    "check": "tsc --noEmit",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "vitest run"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jackadam1981/sub2singbox-worker.git"
+  },
+  "keywords": [
+    "cloudflare-workers",
+    "sing-box",
+    "subscription-converter"
+  ],
+  "author": "",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/jackadam1981/sub2singbox-worker/issues"
+  },
+  "homepage": "https://github.com/jackadam1981/sub2singbox-worker#readme",
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260411.1",
+    "@types/node": "^25.6.0",
+    "typescript": "^6.0.2",
+    "vitest": "^4.1.4",
+    "wrangler": "^4.81.1"
+  }
+}

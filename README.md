@@ -1,2 +1,146 @@
 # sub2singbox-worker
-sing-box-template-worker 
+
+一个部署在 Cloudflare Workers 上的 sing-box 订阅转换 MVP。
+
+这个仓库基于对以下项目的研读后整理出来：
+
+- `bestnite/sub2sing-box`
+- `haierkeys/singbox-subscribe-convert`
+- `dzhuang/sing-box-converter`
+- `Toperlock/sing-box-subscribe`
+
+当前版本的目标不是一次性复刻它们全部能力，而是先落一个更适合 Workers 的最小可用版本：
+
+- 支持按目标设备区分模板：`ios` / `android` / `pc` / `openwrt`
+- 支持按 sing-box 版本区分模板：`legacy (1.10 / 1.11)`、`modern (1.12+)`
+- 支持常见 URI 订阅解析为 sing-box outbound：
+  - `ss`
+  - `vmess`
+  - `vless`
+  - `trojan`
+  - `hy2` / `hysteria2`
+  - `tuic`
+  - `socks`
+  - `http`
+- 支持输入格式：
+  - 远程订阅 URL
+  - base64 订阅文本
+  - sing-box JSON（`outbounds` 或 outbound 数组）
+- 暴露 Worker 接口：
+  - `/health`
+  - `/profiles`
+  - `/convert`
+
+## 设计取向
+
+参考项目里，比较有价值的思路主要有四类：
+
+1. **模板驱动**
+   - `bestnite/sub2sing-box` 和 `Toperlock/sing-box-subscribe` 都强调模板占位与节点插槽。
+2. **多模板与多端适配**
+   - `haierkeys/singbox-subscribe-convert` 明确把「iOS / Android / OpenWrt / 不同 sing-box 版本」当作核心问题。
+3. **解析器抽象**
+   - `dzhuang/sing-box-converter` 将原脚本整理为可复用库，更适合作为协议解析层的参考。
+4. **面向在线部署**
+   - `Toperlock/sing-box-subscribe` 证明了在线生成配置是有明确需求的，但 Vercel 的执行时长和文件模型不适合继续扩展，因此这里直接转向 Workers。
+
+这个仓库当前采用的是：
+
+- **内建 profile 生成器**，而不是把模板文件系统照搬进 Worker
+- **协议 URI -> sing-box outbound** 的直接转换
+- **版本差异收敛到 profile/channel**，而不是在单份模板里塞大量条件分支
+
+## profile 说明
+
+### 版本通道
+
+- `legacy`: sing-box `1.10.x` / `1.11.x`
+- `modern`: sing-box `1.12.x` 及以上
+
+### 设备通道
+
+- `ios`
+- `android`
+- `pc`
+- `openwrt`
+
+### 当前差异点
+
+- `legacy` profile 使用旧式 DNS server 表达方式
+- `modern` profile 使用 1.12+ 的 DNS server 新结构
+- `modern` profile 会为使用域名的节点补 `domain_resolver`
+- `pc` profile 额外附带 `mixed` 入站
+- `openwrt` profile 显式保留 `interface_name`
+
+更完整的矩阵见：[`docs/profile-matrix.md`](docs/profile-matrix.md)
+
+## 本地开发
+
+```bash
+npm install
+npm run check
+npm test
+npm run dev
+```
+
+## Cloudflare 部署
+
+```bash
+npm run deploy
+```
+
+可选环境变量：
+
+- `ACCESS_PASSWORD`: 开启访问密码保护
+- `DEFAULT_DEVICE`: 默认设备，默认 `openwrt`
+- `DEFAULT_VERSION`: 默认版本，默认 `1.12.0`
+- `DEFAULT_SUBSCRIPTION_URL`: 默认订阅地址
+- `DEFAULT_USER_AGENT`: 拉取订阅时使用的 UA
+- `CORS_ORIGIN`: 允许跨域的源
+
+## API
+
+### `GET /health`
+
+返回服务健康状态。
+
+### `GET /profiles`
+
+返回内建 profile 列表与版本分层建议。
+
+### `GET /convert`
+
+查询参数：
+
+- `device`: `ios | android | pc | openwrt`
+- `version`: 如 `1.11.7`、`1.12.0`
+- `url`: 一个或多个订阅 URL，支持 `,` 或 `|` 分隔
+- `raw`: 直接传入订阅内容
+- `raw_base64=1`: 表示 `raw` 需要先做 base64 解码
+- `include`: 只保留匹配此正则的节点 tag
+- `exclude`: 排除匹配此正则的节点 tag
+- `ua`: 拉取订阅时使用的 User-Agent
+- `password` / `token`: 若配置了 `ACCESS_PASSWORD`，需要携带
+
+示例：
+
+```text
+/convert?device=openwrt&version=1.12.0&url=https://example.com/sub.txt
+```
+
+```text
+/convert?device=ios&version=1.11.8&raw_base64=1&raw=<base64_subscription>
+```
+
+## 当前明确未做
+
+为了先把 Workers 版本做稳，这一版还没有实现：
+
+- Clash YAML 订阅解析
+- 远程自定义模板拉取与缓存
+- KV / Cache API 缓存层
+- 定时刷新与预热
+- 节点国家分组、复杂 selector 规则生成
+- 规则集下载与自动修正
+
+这些内容已经在文档中留了后续扩展方向，见：[`docs/research.md`](docs/research.md)
