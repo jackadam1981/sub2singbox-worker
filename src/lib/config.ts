@@ -161,6 +161,7 @@ export function buildRenderContext(
     allOutbounds,
     route: generatedConfig.route as JsonObject,
     experimental: generatedConfig.experimental as JsonObject,
+    nodeTags: nodes.map((node) => node.tag),
   };
 }
 

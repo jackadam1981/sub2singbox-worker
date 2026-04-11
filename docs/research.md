@@ -158,6 +158,7 @@
 2. **模板扩展**
    - 将 profile 生成器升级为 profile + template 组合
    - 增加远程模板 URL 支持
+   - 增加轻量模板 DSL，如节点筛选、selector/urltest 组生成
 
 3. **缓存扩展**
    - 使用 KV 缓存订阅原文和转换结果

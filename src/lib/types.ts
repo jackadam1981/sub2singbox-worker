@@ -39,7 +39,13 @@ export interface RenderContext {
   inbounds: JsonValue[];
   selectorOutbounds: JsonObject[];
   nodeOutbounds: SingBoxOutbound[];
+  nodeTags: string[];
   allOutbounds: JsonValue[];
   route: JsonObject;
   experimental: JsonObject;
+}
+
+export interface TemplateCall {
+  name: string;
+  args: string[];
 }

@@ -232,6 +232,61 @@ npm run deploy
 }
 ```
 
+### 增强模板能力
+
+现在除了基础占位符，还支持带参数的模板调用：
+
+- `{{ Nodes(filter=香港|HK) }}`
+- `{{ NodeTags(filter=香港|HK) }}`
+- `{{ Group(tag=HK, type=selector, filter=香港|HK, append=direct) }}`
+- `{{ UrlTest(tag=AutoHK, filter=香港|HK, url=https://www.gstatic.com/generate_204) }}`
+
+参数说明：
+
+- `filter` / `include`: 正则筛选匹配的节点 tag
+- `exclude`: 正则排除
+- `limit`: 限制匹配节点数量
+- `append`: 无论是否匹配成功都追加这些 tag
+- `fallback`: 仅在没有匹配节点时使用
+- `tag`: 生成组的 tag
+- `type`: `selector` 或 `urltest`
+- `url` / `interval` / `tolerance`: `urltest` 相关参数
+
+示例：
+
+```json
+{
+  "outbounds": [
+    "{{ Group(tag=HK, type=selector, filter=香港|HK, append=direct) }}",
+    "{{ UrlTest(tag=AutoHK, filter=香港|HK, url=https://www.gstatic.com/generate_204) }}",
+    "{{ Nodes(filter=香港|HK) }}",
+    { "type": "direct", "tag": "direct" }
+  ],
+  "meta": {
+    "hk_tags": "{{ NodeTags(filter=香港|HK) }}"
+  }
+}
+```
+
+另外也支持对象指令方式，更适合一次生成多个分组：
+
+```json
+{
+  "outbounds": [
+    {
+      "$template": "outboundGroups",
+      "type": "selector",
+      "append": ["direct"],
+      "definitions": [
+        { "tag": "HK", "include": "香港|HK" },
+        { "tag": "US", "include": "美国|US" }
+      ]
+    },
+    "{{ AllOutbounds }}"
+  ]
+}
+```
+
 ## 当前明确未做
 
 为了先把 Workers 版本做稳，这一版还没有实现：
