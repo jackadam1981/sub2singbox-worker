@@ -116,13 +116,14 @@ describe("worker routes", () => {
   it("lists builtin templates", async () => {
     const response = await worker.fetch(new Request("https://example.com/templates"), {});
     const data = (await response.json()) as {
-      templates: Array<{ id: string; name: string }>;
+      templates: Array<{ id: string; name: string; template_url?: string }>;
     };
 
     expect(response.status).toBe(200);
     expect(data.templates.some((item) => item.id === "default")).toBe(true);
     expect(data.templates.some((item) => item.id === "manual")).toBe(true);
     expect(data.templates.some((item) => item.id === "auto")).toBe(true);
+    expect(data.templates.every((item) => typeof item.template_url === "string")).toBe(true);
   });
 
   it("returns template recommendations for current profile", async () => {
@@ -152,16 +153,18 @@ describe("worker routes", () => {
     const data = (await response.json()) as {
       template: {
         id: string;
-        template_text: string;
+        fallback_template_text: string;
         recommended_for_current_profile?: boolean;
         recommendation_rank?: number;
+        template_url?: string;
       };
       recommendation?: { primary_template_id: string };
     };
 
     expect(response.status).toBe(200);
     expect(data.template.id).toBe("manual");
-    expect(data.template.template_text).toContain('"type": "selector"');
+    expect(data.template.fallback_template_text).toContain('"type": "selector"');
+    expect(data.template.template_url).toContain("raw.githubusercontent.com/ACL4SSR/ACL4SSR");
     expect(data.template.recommended_for_current_profile).toBe(true);
     expect(data.template.recommendation_rank).toBe(1);
     expect(data.recommendation?.primary_template_id).toBe("manual");
@@ -209,22 +212,99 @@ describe("worker routes", () => {
 
   it("renders builtin template by id", async () => {
     const rawContent = "ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ=@1.2.3.4:443#HK-SS";
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url === "https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/config/ACL4SSR_Online_NoAuto.ini") {
+        return new Response(
+          `{
+            "dns": "{{ Dns }}",
+            "inbounds": "{{ Inbounds }}",
+            "outbounds": [
+              {
+                "type": "selector",
+                "tag": "proxy",
+                "outbounds": "{{ NodeTags(append=direct) }}"
+              },
+              { "type": "direct", "tag": "direct" },
+              "{{ Nodes }}"
+            ],
+            "route": "{{ Route }}"
+          }`,
+          { status: 200 },
+        );
+      }
+      return originalFetch(input as RequestInfo, init);
+    };
     const request = new Request(
       `https://example.com/convert?device=pc&version=1.13.7&raw=${encodeURIComponent(rawContent)}&template=${encodeURIComponent("builtin:manual")}`,
     );
 
-    const response = await worker.fetch(request, {});
+    try {
+      const response = await worker.fetch(request, {});
+      const data = (await response.json()) as {
+        outbounds?: Array<{ tag: string; type: string }>;
+        error?: string;
+      };
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get("x-template-mode")).toBe("builtin");
+      expect(response.headers.get("x-template-id")).toBe("manual");
+      expect(data.outbounds?.some((item) => item.tag === "proxy" && item.type === "selector")).toBe(
+        true,
+      );
+      expect(data.outbounds?.some((item) => item.tag === "HK-SS")).toBe(true);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("returns template recommendations for current profile", async () => {
+    const response = await worker.fetch(
+      new Request("https://example.com/templates?device=pc&version=1.13.7"),
+      {},
+    );
     const data = (await response.json()) as {
-      outbounds: Array<{ tag: string; type: string }>;
+      recommendation: {
+        primary_template_id: string;
+        alternative_template_ids: string[];
+      };
+      current_profile: {
+        device: string;
+        channel: string;
+      };
     };
 
     expect(response.status).toBe(200);
-    expect(response.headers.get("x-template-mode")).toBe("builtin");
-    expect(response.headers.get("x-template-id")).toBe("manual");
-    expect(data.outbounds.some((item) => item.tag === "proxy" && item.type === "selector")).toBe(
-      true,
+    expect(data.current_profile).toEqual({
+      device: "pc",
+      channel: "modern",
+    });
+    expect(data.recommendation.primary_template_id).toBe("manual");
+    expect(data.recommendation.alternative_template_ids).toContain("auto");
+  });
+
+  it("returns builtin template detail by id", async () => {
+    const response = await worker.fetch(
+      new Request("https://example.com/templates/manual?device=pc&version=1.13.7"),
+      {},
     );
-    expect(data.outbounds.some((item) => item.tag === "HK-SS")).toBe(true);
+    const data = (await response.json()) as {
+      template: {
+        id: string;
+        template_url?: string;
+        fallback_template_text?: string;
+        recommended_for_current_profile?: boolean;
+        recommendation_rank?: number;
+      };
+    };
+
+    expect(response.status).toBe(200);
+    expect(data.template.id).toBe("manual");
+    expect(typeof data.template.template_url).toBe("string");
+    expect(typeof data.template.fallback_template_text).toBe("string");
+    expect(data.template.recommended_for_current_profile).toBe(true);
+    expect(data.template.recommendation_rank).toBe(1);
   });
 
   it("tolerates partial source failures by default", async () => {

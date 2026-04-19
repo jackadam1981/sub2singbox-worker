@@ -36,7 +36,10 @@ export interface BuiltinTemplateDefinition {
   compatible_devices: Device[];
   compatible_channels: VersionChannel[];
   tags: string[];
-  template_text: string;
+  template_url?: string;
+  source_repo?: string;
+  source_path?: string;
+  fallback_template_text: string;
   featured?: boolean;
 }
 

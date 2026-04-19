@@ -364,17 +364,32 @@ npm run deploy
 
 ## 内建模板库
 
-当前已提供 3 个内建 sing-box 模板，可通过 `template=builtin:<id>` 直接使用：
+当前已提供 3 个内建 sing-box 模板预设，可通过 `template=builtin:<id>` 直接使用：
 
 - `builtin:default`
+  - 指向 ACL4SSR 远程配置模板
   - 尽量接近默认生成配置
-  - 适合作为无模板模式的显式替代
 - `builtin:manual`
+  - 指向 ACL4SSR Mini / NoAuto 类远程配置
   - 偏向手动 selector 切换
-  - 提供 `Manual` / `Auto` / `Proxy` 结构
 - `builtin:auto`
+  - 指向 ACL4SSR Online / Auto 类远程配置
   - 偏向自动测速优先
-  - 提供 `Auto` / `Fallback` 等结构
+
+### 远程来源与回退
+
+内建模板库当前采用：
+
+- **远程模板优先**：优先拉取模板定义里的 `template_url`
+- **本地回退**：远程不可用时，回退到内置 `fallback_template_text`
+
+目前模板元数据里会返回：
+
+- `template_url`
+- `source_repo`
+- `source_path`
+
+这样你可以明确看到当前模板预设关联到 ACL4SSR 仓库中的哪份远程配置。
 
 ### 查看模板列表
 

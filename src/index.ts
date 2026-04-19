@@ -292,6 +292,12 @@ async function resolveTemplate(
   template?: string;
   cacheState: string;
   builtinTemplate?: BuiltinTemplateDefinition;
+  templateSource?: {
+    kind: "builtin-remote" | "builtin-fallback" | "remote" | "raw";
+    url?: string;
+    path?: string;
+    repo?: string;
+  };
 }> {
   const selectedTemplate = requestUrl.searchParams.get("template");
   if (selectedTemplate?.startsWith("builtin:")) {
@@ -307,10 +313,41 @@ async function resolveTemplate(
         },
       });
     }
+    if (builtinTemplate.template_url) {
+      const userAgent =
+        requestUrl.searchParams.get("ua") ?? env.DEFAULT_USER_AGENT ?? "sing-box";
+      try {
+        const cached = await getCachedRemoteText(env, {
+          key: getRemoteResourceCacheKey("template", builtinTemplate.template_url),
+          kind: "template",
+          bypassFreshCache: true,
+          loader: () => fetchText(builtinTemplate.template_url!, userAgent),
+        });
+        return {
+          template: cached.value,
+          cacheState: cached.source,
+          builtinTemplate,
+          templateSource: {
+            kind: "builtin-remote",
+            url: builtinTemplate.template_url,
+            path: builtinTemplate.source_path,
+            repo: builtinTemplate.source_repo,
+          },
+        };
+      } catch {
+        // Fall back to local emergency template if remote format is unavailable.
+      }
+    }
     return {
-      template: builtinTemplate.template_text,
+      template: builtinTemplate.fallback_template_text,
       cacheState: "builtin",
       builtinTemplate,
+      templateSource: {
+        kind: "builtin-fallback",
+        url: builtinTemplate.template_url,
+        path: builtinTemplate.source_path,
+        repo: builtinTemplate.source_repo,
+      },
     };
   }
 
@@ -322,10 +359,22 @@ async function resolveTemplate(
       if (!decoded) {
         throw new Error("template_raw_base64=1 但 template_raw 不是有效 base64");
       }
-      return { template: decoded, cacheState: "raw" };
+      return {
+        template: decoded,
+        cacheState: "raw",
+        templateSource: {
+          kind: "raw",
+        },
+      };
     }
 
-    return { template: templateRaw, cacheState: "raw" };
+    return {
+      template: templateRaw,
+      cacheState: "raw",
+      templateSource: {
+        kind: "raw",
+      },
+    };
   }
 
   const templateUrl =
@@ -341,7 +390,14 @@ async function resolveTemplate(
     bypassFreshCache: true,
     loader: () => fetchText(templateUrl, userAgent),
   });
-  return { template: cached.value, cacheState: cached.source };
+  return {
+    template: cached.value,
+    cacheState: cached.source,
+    templateSource: {
+      kind: "remote",
+      url: templateUrl,
+    },
+  };
 }
 
 function resolveOutputFormat(requestUrl: URL): OutputFormat {

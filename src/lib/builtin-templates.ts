@@ -8,6 +8,9 @@ import type {
 
 const ALL_DEVICES: Device[] = ["ios", "android", "pc", "openwrt"];
 const ALL_CHANNELS: VersionChannel[] = ["legacy", "modern"];
+const ACL4SSR_REPO = "ACL4SSR/ACL4SSR";
+const ACL4SSR_RAW_BASE =
+  "https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/config";
 
 const DEFAULT_TEMPLATE = `{
   "log": {
@@ -86,34 +89,43 @@ const BUILTIN_TEMPLATE_DEFINITIONS: BuiltinTemplateDefinition[] = [
   {
     id: "default",
     title: "Default",
-    description: "贴近当前默认生成逻辑的通用 sing-box 模板。",
+    description: "默认通用模板，优先引用 ACL4SSR 在线规则配置。",
     output_format: "sing-box",
     compatible_devices: ALL_DEVICES,
     compatible_channels: ALL_CHANNELS,
-    tags: ["builtin", "default", "general"],
-    template_text: DEFAULT_TEMPLATE,
+    tags: ["builtin", "default", "general", "acl4ssr"],
+    template_url: `${ACL4SSR_RAW_BASE}/ACL4SSR_Online.ini`,
+    source_repo: ACL4SSR_REPO,
+    source_path: "Clash/config/ACL4SSR_Online.ini",
+    fallback_template_text: DEFAULT_TEMPLATE,
     featured: true,
   },
   {
     id: "manual",
     title: "Manual Selector",
-    description: "偏手动切换的简洁模板，使用单个 selector 承载全部节点。",
+    description: "偏手动切换的模板，优先引用 ACL4SSR 无自动测速配置。",
     output_format: "sing-box",
     compatible_devices: ALL_DEVICES,
     compatible_channels: ALL_CHANNELS,
-    tags: ["builtin", "manual", "selector"],
-    template_text: MANUAL_TEMPLATE,
+    tags: ["builtin", "manual", "selector", "acl4ssr"],
+    template_url: `${ACL4SSR_RAW_BASE}/ACL4SSR_Online_NoAuto.ini`,
+    source_repo: ACL4SSR_REPO,
+    source_path: "Clash/config/ACL4SSR_Online_NoAuto.ini",
+    fallback_template_text: MANUAL_TEMPLATE,
     featured: true,
   },
   {
     id: "auto",
     title: "Auto URLTest",
-    description: "偏自动选择的简洁模板，使用 urltest 作为主出站。",
+    description: "偏自动选择的模板，优先引用 ACL4SSR Mini Fallback 配置。",
     output_format: "sing-box",
     compatible_devices: ALL_DEVICES,
     compatible_channels: ALL_CHANNELS,
-    tags: ["builtin", "auto", "urltest"],
-    template_text: AUTO_TEMPLATE,
+    tags: ["builtin", "auto", "urltest", "acl4ssr", "fallback"],
+    template_url: `${ACL4SSR_RAW_BASE}/ACL4SSR_Online_Mini_Fallback.ini`,
+    source_repo: ACL4SSR_REPO,
+    source_path: "Clash/config/ACL4SSR_Online_Mini_Fallback.ini",
+    fallback_template_text: AUTO_TEMPLATE,
     featured: true,
   },
 ];
@@ -230,6 +242,9 @@ export function builtinTemplateSummary(
     compatible_channels: template.compatible_channels,
     tags: template.tags,
     featured: template.featured ?? false,
+    ...(template.template_url ? { template_url: template.template_url } : {}),
+    ...(template.source_repo ? { source_repo: template.source_repo } : {}),
+    ...(template.source_path ? { source_path: template.source_path } : {}),
     ...(options?.currentDevice || options?.currentChannel
       ? { compatible_with_current_profile: compatible }
       : {}),
@@ -260,7 +275,9 @@ export function builtinTemplateDetail(
 
   return {
     ...summary,
-    template_text: template.template_text,
+    ...(template.fallback_template_text
+      ? { fallback_template_text: template.fallback_template_text }
+      : {}),
     ...(recommendation
       ? {
           recommended_for_current_profile:
