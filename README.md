@@ -411,6 +411,26 @@ GET /templates/manual
 GET /templates/manual?device=pc&version=1.13.7
 ```
 
+### 预览模板渲染结果
+
+```text
+GET /templates/manual/preview?device=pc&version=1.13.7&raw=ss://...
+```
+
+```text
+GET /templates/auto/preview?device=openwrt&version=1.13.7&url=https://example.com/sub.txt
+```
+
+预览接口会返回：
+
+- `template`
+- `current_profile`
+- `recommendation`
+- `explain`
+- `rendered`
+
+可用于直接查看某个在线模板预设在当前节点输入下最终会生成什么 sing-box 配置。
+
 ### 使用示例
 
 ```text

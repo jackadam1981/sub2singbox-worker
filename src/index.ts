@@ -972,6 +972,72 @@ function handleTemplateDetail(request: Request, env: WorkerEnv): Response {
   );
 }
 
+async function handleTemplatePreview(request: Request, env: WorkerEnv): Promise<Response> {
+  const url = new URL(request.url);
+  const prefix = "/templates/";
+  const suffix = "/preview";
+  const templateId = decodeURIComponent(
+    url.pathname.slice(prefix.length, url.pathname.length - suffix.length),
+  ).trim();
+  if (!templateId) {
+    throw new AppError({
+      stage: "template",
+      code: "TEMPLATE_ID_REQUIRED",
+      message: "缺少模板 ID。",
+      status: 400,
+    });
+  }
+
+  const template = getBuiltinTemplate(templateId);
+  if (!template) {
+    throw new AppError({
+      stage: "template",
+      code: "BUILTIN_TEMPLATE_NOT_FOUND",
+      message: `未找到内建模板: ${templateId}`,
+      status: 404,
+    });
+  }
+
+  const previewUrl = new URL(request.url);
+  previewUrl.searchParams.set("template", `builtin:${template.id}`);
+  const previewRequest = new Request(previewUrl.toString(), request);
+  const analysis = await analyzeConversion(previewRequest, env);
+  const rendered = await renderSingBoxConfig(
+    env,
+    analysis.profile,
+    analysis.filteredOutbounds,
+    analysis.templateResult,
+  );
+  const recommendationInput = resolveTemplateRecommendation(url);
+
+  return jsonResponse(
+    {
+      ok: true,
+      template: builtinTemplateDetail(
+        template,
+        recommendationInput
+          ? {
+              currentDevice: recommendationInput.device,
+              currentChannel: recommendationInput.channel,
+            }
+          : undefined,
+      ),
+      ...(recommendationInput
+        ? {
+            recommendation: recommendationInput.recommendation,
+            current_profile: {
+              device: recommendationInput.device,
+              channel: recommendationInput.channel,
+            },
+          }
+        : {}),
+      explain: analysis.explain,
+      rendered,
+    },
+    env,
+  );
+}
+
 async function handleValidate(request: Request, env: WorkerEnv): Promise<Response> {
   const url = new URL(request.url);
   if (!isAuthorized(url, request, env)) {
@@ -1095,6 +1161,9 @@ export default {
         case "/convert":
           return await handleConvert(request, env);
         default:
+          if (url.pathname.startsWith("/templates/") && url.pathname.endsWith("/preview")) {
+            return await handleTemplatePreview(request, env);
+          }
           if (url.pathname.startsWith("/templates/")) {
             return handleTemplateDetail(request, env);
           }
