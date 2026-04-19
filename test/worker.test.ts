@@ -153,7 +153,6 @@ describe("worker routes", () => {
     const data = (await response.json()) as {
       template: {
         id: string;
-        fallback_template_text: string;
         recommended_for_current_profile?: boolean;
         recommendation_rank?: number;
         template_url?: string;
@@ -163,7 +162,6 @@ describe("worker routes", () => {
 
     expect(response.status).toBe(200);
     expect(data.template.id).toBe("manual");
-    expect(data.template.fallback_template_text).toContain('"type": "selector"');
     expect(data.template.template_url).toContain("raw.githubusercontent.com/ACL4SSR/ACL4SSR");
     expect(data.template.recommended_for_current_profile).toBe(true);
     expect(data.template.recommendation_rank).toBe(1);
@@ -347,7 +345,6 @@ IP-CIDR,91.108.0.0/16,no-resolve`,
       template: {
         id: string;
         template_url?: string;
-        fallback_template_text?: string;
         recommended_for_current_profile?: boolean;
         recommendation_rank?: number;
       };
@@ -356,7 +353,6 @@ IP-CIDR,91.108.0.0/16,no-resolve`,
     expect(response.status).toBe(200);
     expect(data.template.id).toBe("manual");
     expect(typeof data.template.template_url).toBe("string");
-    expect(typeof data.template.fallback_template_text).toBe("string");
     expect(data.template.recommended_for_current_profile).toBe(true);
     expect(data.template.recommendation_rank).toBe(1);
   });

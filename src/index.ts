@@ -317,39 +317,32 @@ async function resolveTemplate(
     if (builtinTemplate.template_url) {
       const userAgent =
         requestUrl.searchParams.get("ua") ?? env.DEFAULT_USER_AGENT ?? "sing-box";
-      try {
-        const cached = await getCachedRemoteText(env, {
-          key: getRemoteResourceCacheKey("template", builtinTemplate.template_url),
-          kind: "template",
-          bypassFreshCache: true,
-          loader: () => fetchText(builtinTemplate.template_url!, userAgent),
-        });
-        return {
-          template: cached.value,
-          cacheState: cached.source,
-          builtinTemplate,
-          templateSource: {
-            kind: "builtin-remote",
-            url: builtinTemplate.template_url,
-            path: builtinTemplate.source_path,
-            repo: builtinTemplate.source_repo,
-          },
-        };
-      } catch {
-        // Fall back to local emergency template if remote format is unavailable.
-      }
+      const cached = await getCachedRemoteText(env, {
+        key: getRemoteResourceCacheKey("template", builtinTemplate.template_url),
+        kind: "template",
+        bypassFreshCache: true,
+        loader: () => fetchText(builtinTemplate.template_url!, userAgent),
+      });
+      return {
+        template: cached.value,
+        cacheState: cached.source,
+        builtinTemplate,
+        templateSource: {
+          kind: "builtin-remote",
+          url: builtinTemplate.template_url,
+          path: builtinTemplate.source_path,
+          repo: builtinTemplate.source_repo,
+        },
+      };
     }
-    return {
-      template: builtinTemplate.fallback_template_text,
-      cacheState: "builtin",
-      builtinTemplate,
-      templateSource: {
-        kind: "builtin-fallback",
-        url: builtinTemplate.template_url,
-        path: builtinTemplate.source_path,
-        repo: builtinTemplate.source_repo,
+    throw new AppError({
+      stage: "template",
+      code: "BUILTIN_TEMPLATE_SOURCE_MISSING",
+      message: `内建模板缺少远程来源: ${templateId}`,
+      detail: {
+        template_id: templateId,
       },
-    };
+    });
   }
 
   const templateRaw = requestUrl.searchParams.get("template_raw");

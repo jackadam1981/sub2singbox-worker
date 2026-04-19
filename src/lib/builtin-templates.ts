@@ -12,79 +12,6 @@ const ACL4SSR_REPO = "ACL4SSR/ACL4SSR";
 const ACL4SSR_RAW_BASE =
   "https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/config";
 
-const DEFAULT_TEMPLATE = `{
-  "log": {
-    "level": "info",
-    "timestamp": true
-  },
-  "dns": "{{ Dns }}",
-  "inbounds": "{{ Inbounds }}",
-  "outbounds": "{{ AllOutbounds }}",
-  "route": "{{ Route }}",
-  "experimental": "{{ Experimental }}"
-}`;
-
-const MANUAL_TEMPLATE = `{
-  "log": {
-    "level": "info",
-    "timestamp": true
-  },
-  "dns": "{{ Dns }}",
-  "inbounds": "{{ Inbounds }}",
-  "outbounds": [
-    {
-      "type": "selector",
-      "tag": "proxy",
-      "outbounds": "{{ NodeTags(append=direct) }}"
-    },
-    {
-      "type": "direct",
-      "tag": "direct"
-    },
-    {
-      "type": "block",
-      "tag": "block"
-    },
-    "{{ Nodes }}"
-  ],
-  "route": {
-    "auto_detect_interface": true,
-    "final": "proxy"
-  }
-}`;
-
-const AUTO_TEMPLATE = `{
-  "log": {
-    "level": "info",
-    "timestamp": true
-  },
-  "dns": "{{ Dns }}",
-  "inbounds": "{{ Inbounds }}",
-  "outbounds": [
-    {
-      "type": "urltest",
-      "tag": "proxy",
-      "outbounds": "{{ NodeTags(fallback=direct) }}",
-      "url": "https://www.gstatic.com/generate_204",
-      "interval": "10m",
-      "tolerance": 50
-    },
-    {
-      "type": "direct",
-      "tag": "direct"
-    },
-    {
-      "type": "block",
-      "tag": "block"
-    },
-    "{{ Nodes }}"
-  ],
-  "route": {
-    "auto_detect_interface": true,
-    "final": "proxy"
-  }
-}`;
-
 const BUILTIN_TEMPLATE_DEFINITIONS: BuiltinTemplateDefinition[] = [
   {
     id: "default",
@@ -98,7 +25,6 @@ const BUILTIN_TEMPLATE_DEFINITIONS: BuiltinTemplateDefinition[] = [
     acl4ssr_config_url: `${ACL4SSR_RAW_BASE}/ACL4SSR_Online.ini`,
     source_repo: ACL4SSR_REPO,
     source_path: "Clash/config/ACL4SSR_Online.ini",
-    fallback_template_text: DEFAULT_TEMPLATE,
     featured: true,
   },
   {
@@ -113,7 +39,6 @@ const BUILTIN_TEMPLATE_DEFINITIONS: BuiltinTemplateDefinition[] = [
     acl4ssr_config_url: `${ACL4SSR_RAW_BASE}/ACL4SSR_Online_NoAuto.ini`,
     source_repo: ACL4SSR_REPO,
     source_path: "Clash/config/ACL4SSR_Online_NoAuto.ini",
-    fallback_template_text: MANUAL_TEMPLATE,
     featured: true,
   },
   {
@@ -128,7 +53,6 @@ const BUILTIN_TEMPLATE_DEFINITIONS: BuiltinTemplateDefinition[] = [
     acl4ssr_config_url: `${ACL4SSR_RAW_BASE}/ACL4SSR_Online_Mini_Fallback.ini`,
     source_repo: ACL4SSR_REPO,
     source_path: "Clash/config/ACL4SSR_Online_Mini_Fallback.ini",
-    fallback_template_text: AUTO_TEMPLATE,
     featured: true,
   },
 ];
@@ -278,9 +202,6 @@ export function builtinTemplateDetail(
 
   return {
     ...summary,
-    ...(template.fallback_template_text
-      ? { fallback_template_text: template.fallback_template_text }
-      : {}),
     ...(recommendation
       ? {
           recommended_for_current_profile:
