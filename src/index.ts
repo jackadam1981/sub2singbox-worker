@@ -21,6 +21,7 @@ import {
   buildClashProviderDocument,
   toClashProxy,
 } from "./lib/clash";
+import { buildSingBoxConfigFromAcl4ssr } from "./lib/acl4ssr";
 import { buildRenderContext, buildSingBoxConfig } from "./lib/config";
 import { AppError, toErrorResponseBody } from "./lib/errors";
 import { fetchText } from "./lib/http";
@@ -459,6 +460,41 @@ function summarizeTemplateMode(
   return "remote";
 }
 
+async function renderSingBoxConfig(
+  env: WorkerEnv,
+  profile: ReturnType<typeof resolveProfile>,
+  outbounds: ReturnType<typeof dedupeAndNormalizeOutbounds>,
+  templateResult: Awaited<ReturnType<typeof resolveTemplate>>,
+): Promise<JsonObject> {
+  if (templateResult.builtinTemplate?.acl4ssr_config_url) {
+    try {
+      const aclConfig = await fetchText(
+        templateResult.builtinTemplate.acl4ssr_config_url,
+        env.DEFAULT_USER_AGENT ?? "sing-box",
+      );
+      const built = await buildSingBoxConfigFromAcl4ssr(
+        profile,
+        outbounds,
+        aclConfig,
+        async (ruleUrl: string) =>
+          fetchText(ruleUrl, env.DEFAULT_USER_AGENT ?? "sing-box"),
+      );
+      return built.config;
+    } catch {
+      // Fallback to builtin/remote JSON template path below.
+    }
+  }
+
+  if (templateResult.template) {
+    return renderTemplate(
+      templateResult.template,
+      buildRenderContext(profile, outbounds),
+    );
+  }
+
+  return buildSingBoxConfig(profile, outbounds);
+}
+
 function buildSourceDebugEntries(
   entries: Awaited<ReturnType<typeof resolvePayloads>>["entries"],
   channel: "legacy" | "modern",
@@ -781,21 +817,12 @@ async function handleConvert(request: Request, env: WorkerEnv): Promise<Response
     });
   }
 
-  let config;
-  try {
-    config = templateResult.template
-      ? renderTemplate(
-          templateResult.template,
-          buildRenderContext(profile, filteredOutbounds),
-        )
-      : buildSingBoxConfig(profile, filteredOutbounds);
-  } catch (error) {
-    throw new AppError({
-      stage: "template-render",
-      code: "TEMPLATE_RENDER_FAILED",
-      message: error instanceof Error ? error.message : "模板渲染失败",
-    });
-  }
+  const config = await renderSingBoxConfig(
+    env,
+    profile,
+    filteredOutbounds,
+    templateResult,
+  );
   const body = JSON.stringify(config, null, 2);
 
   if (resultCacheKey && !hasRemoteTemplate) {
@@ -1009,18 +1036,14 @@ async function handleExplain(request: Request, env: WorkerEnv): Promise<Response
   if (includeRendered) {
     if (analysis.outputFormat === "sing-box") {
       try {
-        rendered = analysis.templateResult.template
-          ? renderTemplate(
-              analysis.templateResult.template,
-              buildRenderContext(analysis.profile, analysis.filteredOutbounds),
-            )
-          : buildSingBoxConfig(analysis.profile, analysis.filteredOutbounds);
+        rendered = await renderSingBoxConfig(
+          env,
+          analysis.profile,
+          analysis.filteredOutbounds,
+          analysis.templateResult,
+        );
       } catch (error) {
-        throw new AppError({
-          stage: "template-render",
-          code: "TEMPLATE_RENDER_FAILED",
-          message: error instanceof Error ? error.message : "模板渲染失败",
-        });
+        throw error;
       }
     } else if (analysis.outputFormat === "clash") {
       rendered = buildClashConfigDocument(analysis.filteredOutbounds);

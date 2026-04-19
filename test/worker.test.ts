@@ -250,10 +250,64 @@ describe("worker routes", () => {
       expect(response.status).toBe(200);
       expect(response.headers.get("x-template-mode")).toBe("builtin");
       expect(response.headers.get("x-template-id")).toBe("manual");
-      expect(data.outbounds?.some((item) => item.tag === "proxy" && item.type === "selector")).toBe(
+      expect(data.outbounds?.some((item) => item.tag === "HK-SS")).toBe(true);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("builds sing-box route from ACL4SSR remote config", async () => {
+    const rawContent = "ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ=@1.2.3.4:443#HK-SS";
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url === "https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/config/ACL4SSR_Online_NoAuto.ini") {
+        return new Response(
+          `[custom]
+ruleset=🚀 节点选择,https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/Telegram.list
+ruleset=🎯 全球直连,[]GEOIP,CN
+ruleset=🐟 漏网之鱼,[]FINAL
+custom_proxy_group=🚀 节点选择\`select\`[]DIRECT\`.*
+custom_proxy_group=🎯 全球直连\`select\`[]DIRECT\`[]🚀 节点选择
+custom_proxy_group=🐟 漏网之鱼\`select\`[]🚀 节点选择\`[]🎯 全球直连\`.*
+enable_rule_generator=true
+overwrite_original_rules=true`,
+          { status: 200 },
+        );
+      }
+      if (url === "https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/Telegram.list") {
+        return new Response(
+          `DOMAIN-SUFFIX,telegram.org
+IP-CIDR,91.108.0.0/16,no-resolve`,
+          { status: 200 },
+        );
+      }
+      return originalFetch(input as RequestInfo, init);
+    };
+
+    try {
+      const request = new Request(
+        `https://example.com/convert?device=pc&version=1.13.7&raw=${encodeURIComponent(rawContent)}&template=${encodeURIComponent("builtin:manual")}`,
+      );
+      const response = await worker.fetch(request, {});
+      const data = (await response.json()) as {
+        outbounds: Array<{ tag: string; type: string }>;
+        route: { rules: Array<Record<string, unknown>>; final: string };
+      };
+
+      expect(response.status).toBe(200);
+      expect(data.outbounds.some((item) => item.tag === "🚀 节点选择" && item.type === "selector")).toBe(
         true,
       );
-      expect(data.outbounds?.some((item) => item.tag === "HK-SS")).toBe(true);
+      expect(data.route.final).toBe("🐟 漏网之鱼");
+      expect(
+        data.route.rules.some(
+          (rule) =>
+            Array.isArray(rule.domain_suffix) &&
+            rule.domain_suffix.includes("telegram.org") &&
+            rule.outbound === "🚀 节点选择",
+        ),
+      ).toBe(true);
     } finally {
       globalThis.fetch = originalFetch;
     }

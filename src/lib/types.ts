@@ -39,6 +39,7 @@ export interface BuiltinTemplateDefinition {
   template_url?: string;
   source_repo?: string;
   source_path?: string;
+  acl4ssr_config_url?: string;
   fallback_template_text: string;
   featured?: boolean;
 }
