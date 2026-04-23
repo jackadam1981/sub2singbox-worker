@@ -1,17 +1,13 @@
 {
   "name": "sub2singbox-worker",
   "version": "1.0.0",
-  "description": "sing-box subscription converter; deploy to Cloudflare Pages only (pages-dist + wrangler pages deploy), not standalone Workers",
+  "description": "sing-box-template-worker",
   "type": "module",
   "scripts": {
     "check": "tsc --noEmit",
-    "build": "node scripts/build-pages.mjs",
-    "build:pages": "node scripts/build-pages.mjs",
-    "dev": "node scripts/dev-pages.mjs",
-    "dev:once": "npm run build:pages && wrangler pages dev pages-dist --live-reload",
-    "verify": "npm run check && npm test",
-    "predeploy": "npm run verify",
-    "deploy": "npm run build:pages && wrangler pages deploy pages-dist --project-name=sub2singbox-worker",
+    "dev": "wrangler dev",
+    "dev:lan": "wrangler dev --ip 0.0.0.0 --port 8787",
+    "deploy": "wrangler deploy",
     "test": "vitest run"
   },
   "repository": {
@@ -30,12 +26,11 @@
   },
   "homepage": "https://github.com/jackadam1981/sub2singbox-worker#readme",
   "devDependencies": {
-    "chokidar": "^4.0.3",
     "@cloudflare/workers-types": "^4.20260411.1",
     "@types/node": "^25.6.0",
     "typescript": "^6.0.2",
     "vitest": "^4.1.4",
-    "wrangler": "^4.81.1"
+    "wrangler": "^4.84.1"
   },
   "dependencies": {
     "yaml": "^2.8.3"

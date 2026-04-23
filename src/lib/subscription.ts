@@ -4,6 +4,7 @@ import { tryDecodeBase64 } from "./base64";
 import type { JsonObject, JsonValue, SingBoxOutbound, VersionChannel } from "./types";
 
 const SPECIAL_OUTBOUND_TYPES = new Set(["selector", "urltest", "direct", "block", "dns"]);
+const SUPPORTED_TRANSPORT_TYPES = new Set(["ws", "grpc", "http", "httpupgrade", "quic"]);
 const IPV4_PATTERN = /^(?:\d{1,3}\.){3}\d{1,3}$/;
 const IPV6_PATTERN = /^[0-9a-f:]+$/i;
 
@@ -1029,6 +1030,18 @@ function extractOutboundsFromClashYaml(content: string): SingBoxOutbound[] {
   return extractOutboundsFromJson(parsed);
 }
 
+function isSupportedOutbound(outbound: SingBoxOutbound): boolean {
+  const transport = outbound.transport;
+  if (!isJsonObject(transport)) {
+    return true;
+  }
+  const type = transport.type;
+  if (typeof type !== "string" || type.trim().length === 0) {
+    return true;
+  }
+  return SUPPORTED_TRANSPORT_TYPES.has(type.trim().toLowerCase());
+}
+
 export function parseSubscriptionPayload(payload: string, channel: VersionChannel): SingBoxOutbound[] {
   const content = payload.trim();
   if (!content) {
@@ -1039,6 +1052,7 @@ export function parseSubscriptionPayload(payload: string, channel: VersionChanne
     const parsed = JSON.parse(content);
     const outbounds = extractOutboundsFromJson(parsed)
       .filter((outbound) => !SPECIAL_OUTBOUND_TYPES.has(outbound.type))
+      .filter(isSupportedOutbound)
       .map((outbound) => applyDialHints(structuredClone(outbound), channel));
 
     if (outbounds.length > 0) {
@@ -1050,9 +1064,10 @@ export function parseSubscriptionPayload(payload: string, channel: VersionChanne
 
   if (content.includes(":")) {
     try {
-      const outbounds = extractOutboundsFromClashYaml(content).map((outbound) =>
-        applyDialHints(outbound, channel),
-      );
+      const outbounds = extractOutboundsFromClashYaml(content)
+        .filter((outbound) => !SPECIAL_OUTBOUND_TYPES.has(outbound.type))
+        .filter(isSupportedOutbound)
+        .map((outbound) => applyDialHints(outbound, channel));
       if (outbounds.length > 0) {
         return outbounds;
       }
@@ -1077,7 +1092,15 @@ export function parseSubscriptionPayload(payload: string, channel: VersionChanne
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean)
-    .map(parseUriLine)
+    .map((line) => {
+      try {
+        return parseUriLine(line);
+      } catch {
+        return null;
+      }
+    })
+    .filter((item): item is SingBoxOutbound => Boolean(item))
+    .filter(isSupportedOutbound)
     .map((outbound) => applyDialHints(outbound, channel));
 }
 

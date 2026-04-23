@@ -373,6 +373,14 @@ export function toClashProxy(outbound: SingBoxOutbound): ClashProxy | null {
   }
 }
 
+export function buildClashProviderDocument(outbounds: SingBoxOutbound[]): string {
+  const proxies = outbounds
+    .map((outbound) => toClashProxy(outbound))
+    .filter((proxy): proxy is ClashProxy => proxy !== null);
+
+  return YAML.stringify({ proxies });
+}
+
 export function buildClashConfigDocument(outbounds: SingBoxOutbound[]): string {
   const proxies = outbounds
     .map((outbound) => toClashProxy(outbound))

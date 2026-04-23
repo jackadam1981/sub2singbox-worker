@@ -1,5 +1,6 @@
-import { decodeRawSubscriptionBase64, tryDecodeBase64 } from "./lib/base64";
+import { tryDecodeBase64 } from "./lib/base64";
 import {
+  ACL4SSR_DEFAULT_ONLINE_INI_URL,
   builtinTemplateDetail,
   listBuiltinTemplateSummaries,
   builtinTemplateSummary,
@@ -16,7 +17,16 @@ import {
   readResultCache,
   writeResultCache,
 } from "./lib/cache";
-import { buildClashConfigDocument, toClashProxy } from "./lib/clash";
+import {
+  buildClashConfigDocument,
+  buildClashProviderDocument,
+  toClashProxy,
+} from "./lib/clash";
+import {
+  buildClashYamlFromAcl4ssrIni,
+  buildSingBoxConfigFromAcl4ssr,
+  isAcl4ssrConfig,
+} from "./lib/acl4ssr";
 import { buildRenderContext, buildSingBoxConfig } from "./lib/config";
 import { AppError, toErrorResponseBody } from "./lib/errors";
 import { fetchText } from "./lib/http";
@@ -37,13 +47,7 @@ import type {
 } from "./lib/types";
 import consoleHtml from "../pages-static/console.html";
 
-/** 与 `pages-static/console.html` 首屏标识一致；`GET /ui-version` 用于确认请求是否到达本 Worker。 */
-const CONSOLE_UI_VERSION = "v3";
-
-/** 未设置 Worker 变量 `DEFAULT_VERSION` 时的兜底（与 `wrangler.jsonc` vars 对齐）。 */
-const FALLBACK_DEFAULT_VERSION = "1.13.7";
-
-type OutputFormat = "sing-box" | "clash";
+type OutputFormat = "sing-box" | "clash" | "clash-provider";
 
 function jsonResponse(body: unknown, env: WorkerEnv, status = 200): Response {
   const headers = new Headers({
@@ -145,7 +149,7 @@ async function resolvePayloads(
   const rawIsBase64 = requestUrl.searchParams.get("raw_base64");
   if (rawInput) {
     if (rawIsBase64 === "1" || rawIsBase64 === "true") {
-      const decoded = decodeRawSubscriptionBase64(rawInput);
+      const decoded = tryDecodeBase64(rawInput);
       if (!decoded) {
         throw new Error("raw_base64=1 但 raw 不是有效 base64");
       }
@@ -295,6 +299,12 @@ async function resolveTemplate(
   template?: string;
   cacheState: string;
   builtinTemplate?: BuiltinTemplateDefinition;
+  templateSource?: {
+    kind: "builtin-remote" | "builtin-fallback" | "remote" | "raw";
+    url?: string;
+    path?: string;
+    repo?: string;
+  };
 }> {
   const selectedTemplate = requestUrl.searchParams.get("template");
   if (selectedTemplate?.startsWith("builtin:")) {
@@ -310,10 +320,44 @@ async function resolveTemplate(
         },
       });
     }
+    // Built-in templates that ship an ACL4SSR `.ini` should not treat `template_url`
+    // as a sing-box JSON template. Remote INI content is consumed exclusively by the
+    // ACL4SSR conversion path in `renderSingBoxConfig`.
+    if (builtinTemplate.template_url && !builtinTemplate.acl4ssr_config_url) {
+      const userAgent =
+        requestUrl.searchParams.get("ua") ?? env.DEFAULT_USER_AGENT ?? "sing-box";
+      try {
+        const cached = await getCachedRemoteText(env, {
+          key: getRemoteResourceCacheKey("template", builtinTemplate.template_url),
+          kind: "template",
+          bypassFreshCache: true,
+          loader: () => fetchText(builtinTemplate.template_url!, userAgent),
+        });
+        return {
+          template: cached.value,
+          cacheState: cached.source,
+          builtinTemplate,
+          templateSource: {
+            kind: "builtin-remote",
+            url: builtinTemplate.template_url,
+            path: builtinTemplate.source_path,
+            repo: builtinTemplate.source_repo,
+          },
+        };
+      } catch {
+        // Fall back to local emergency template if remote format is unavailable.
+      }
+    }
     return {
-      template: builtinTemplate.template_text,
+      template: builtinTemplate.fallback_template_text,
       cacheState: "builtin",
       builtinTemplate,
+      templateSource: {
+        kind: "builtin-fallback",
+        url: builtinTemplate.template_url,
+        path: builtinTemplate.source_path,
+        repo: builtinTemplate.source_repo,
+      },
     };
   }
 
@@ -325,10 +369,22 @@ async function resolveTemplate(
       if (!decoded) {
         throw new Error("template_raw_base64=1 但 template_raw 不是有效 base64");
       }
-      return { template: decoded, cacheState: "raw" };
+      return {
+        template: decoded,
+        cacheState: "raw",
+        templateSource: {
+          kind: "raw",
+        },
+      };
     }
 
-    return { template: templateRaw, cacheState: "raw" };
+    return {
+      template: templateRaw,
+      cacheState: "raw",
+      templateSource: {
+        kind: "raw",
+      },
+    };
   }
 
   const templateUrl =
@@ -344,7 +400,14 @@ async function resolveTemplate(
     bypassFreshCache: true,
     loader: () => fetchText(templateUrl, userAgent),
   });
-  return { template: cached.value, cacheState: cached.source };
+  return {
+    template: cached.value,
+    cacheState: cached.source,
+    templateSource: {
+      kind: "remote",
+      url: templateUrl,
+    },
+  };
 }
 
 function resolveOutputFormat(requestUrl: URL): OutputFormat {
@@ -360,6 +423,10 @@ function resolveOutputFormat(requestUrl: URL): OutputFormat {
       return "sing-box";
     case "clash":
       return "clash";
+    case "clash-provider":
+    case "clash_provider":
+    case "provider":
+      return "clash-provider";
     default:
       throw new Error(`不支持的输出格式: ${rawFormat}`);
   }
@@ -379,7 +446,7 @@ function resolveTemplateRecommendation(url: URL):
   }
 
   const device = normalizeDevice(deviceParam ?? "openwrt");
-  const channel = getVersionChannel(versionParam ?? FALLBACK_DEFAULT_VERSION);
+  const channel = getVersionChannel(versionParam ?? "1.12.0");
   return {
     device,
     channel,
@@ -400,6 +467,61 @@ function summarizeTemplateMode(
     return "raw";
   }
   return "remote";
+}
+
+async function renderSingBoxConfig(
+  env: WorkerEnv,
+  profile: ReturnType<typeof resolveProfile>,
+  outbounds: ReturnType<typeof dedupeAndNormalizeOutbounds>,
+  templateResult: Awaited<ReturnType<typeof resolveTemplate>>,
+): Promise<JsonObject> {
+  const ua = env.DEFAULT_USER_AGENT ?? "sing-box";
+  const loadRule = (ruleUrl: string) => fetchText(ruleUrl, ua);
+
+  if (templateResult.builtinTemplate?.acl4ssr_config_url) {
+    try {
+      const aclConfig = await fetchText(templateResult.builtinTemplate.acl4ssr_config_url, ua);
+      if (isAcl4ssrConfig(aclConfig)) {
+        return (await buildSingBoxConfigFromAcl4ssr(profile, outbounds, aclConfig, loadRule))
+          .config;
+      }
+    } catch {
+      /* fall through */
+    }
+  }
+
+  if (templateResult.template && isAcl4ssrConfig(templateResult.template)) {
+    try {
+      return (await buildSingBoxConfigFromAcl4ssr(profile, outbounds, templateResult.template, loadRule))
+        .config;
+    } catch {
+      /* fall through */
+    }
+  }
+
+  if (summarizeTemplateMode(templateResult) === "none") {
+    try {
+      const aclConfig = await fetchText(ACL4SSR_DEFAULT_ONLINE_INI_URL, ua);
+      if (isAcl4ssrConfig(aclConfig)) {
+        return (await buildSingBoxConfigFromAcl4ssr(profile, outbounds, aclConfig, loadRule)).config;
+      }
+    } catch {
+      /* fall through */
+    }
+  }
+
+  if (templateResult.template) {
+    if (templateResult.builtinTemplate?.acl4ssr_config_url) {
+      return renderTemplate(
+        templateResult.builtinTemplate.fallback_template_text,
+        buildRenderContext(profile, outbounds),
+      );
+    }
+
+    return renderTemplate(templateResult.template, buildRenderContext(profile, outbounds));
+  }
+
+  return buildSingBoxConfig(profile, outbounds);
 }
 
 function buildSourceDebugEntries(
@@ -493,23 +615,8 @@ async function analyzeConversion(
   explain: ConversionExplain;
 }> {
   const url = new URL(request.url);
-  const outputFormat = resolveOutputFormat(url);
   const requestedDevice = url.searchParams.get("device") ?? env.DEFAULT_DEVICE ?? "openwrt";
-  const versionParam = url.searchParams.get("version");
-  const versionTrimmed = versionParam?.trim() ?? "";
-  if (outputFormat === "sing-box" && !versionTrimmed) {
-    throw new AppError({
-      stage: "profile",
-      code: "VERSION_REQUIRED",
-      status: 400,
-      message: "sing-box 输出必须提供 version 参数，请显式选择 sing-box 版本（不再使用服务端默认版本兜底）。",
-      detail: { device: requestedDevice, output_format: outputFormat },
-    });
-  }
-  const requestedVersion =
-    outputFormat === "sing-box"
-      ? versionTrimmed
-      : versionTrimmed || env.DEFAULT_VERSION || FALLBACK_DEFAULT_VERSION;
+  const requestedVersion = url.searchParams.get("version") ?? env.DEFAULT_VERSION ?? "1.12.0";
   let profile;
   try {
     profile = resolveProfile(requestedDevice, requestedVersion);
@@ -524,6 +631,8 @@ async function analyzeConversion(
       },
     });
   }
+
+  const outputFormat = resolveOutputFormat(url);
   const strictMode = isStrictSourceMode(url);
   const payloadResult = await resolvePayloads(url, env);
   const { debugEntries, parsedOutbounds } = buildSourceDebugEntries(
@@ -631,7 +740,9 @@ async function handleConvert(request: Request, env: WorkerEnv): Promise<Response
   } = analysis;
   const hasRemoteTemplate = summarizeTemplateMode(templateResult) === "remote";
   const resultCacheEnabled =
-    (outputFormat === "sing-box" && !hasRemoteTemplate) || outputFormat === "clash";
+    (outputFormat === "sing-box" && !hasRemoteTemplate) ||
+    outputFormat === "clash" ||
+    outputFormat === "clash-provider";
   const bypassCache = shouldBypassCache(url);
   const resultCacheKey =
     resultCacheEnabled && !bypassCache
@@ -699,54 +810,124 @@ async function handleConvert(request: Request, env: WorkerEnv): Promise<Response
   }
 
   if (outputFormat !== "sing-box") {
-    if (url.searchParams.has("template_url") || url.searchParams.has("template_raw")) {
-      throw new AppError({
-        stage: "output",
-        code: "CLASH_TEMPLATE_UNSUPPORTED",
-        message: "Clash 输出暂不支持 template_url / template_raw，请使用内建 Clash 输出。",
+    const yamlBaseHeaders = (): Record<string, string> => ({
+      "content-type": "text/yaml; charset=utf-8",
+      "cache-control": "no-store",
+      "x-profile-id": profile.id,
+      "x-node-count": String(filteredOutbounds.length),
+      "x-output-format": outputFormat,
+      "x-supported-node-count": String(supportedClashNodes.length),
+      "x-cache-result": resultCacheState,
+      "x-cache-subscription": payloadResult.cacheState,
+      "x-cache-template": templateResult.cacheState,
+      "x-source-total": String(payloadResult.sourceStats.total),
+      "x-source-succeeded": String(payloadResult.sourceStats.succeeded),
+      "x-source-failed": String(payloadResult.sourceStats.failed),
+      "x-source-mode": payloadResult.sourceStats.mode,
+    });
+
+    if (outputFormat === "clash-provider") {
+      const body = buildClashProviderDocument(filteredOutbounds);
+      if (resultCacheKey && !hasRemoteTemplate) {
+        await writeResultCache(env, resultCacheKey, body);
+      }
+      return new Response(body, {
+        headers: buildTextHeaders(env, yamlBaseHeaders()),
       });
     }
 
-    const body = buildClashConfigDocument(filteredOutbounds);
+    const ua = url.searchParams.get("ua") ?? env.DEFAULT_USER_AGENT ?? "sing-box";
+    const loadRuleList = (ruleUrl: string) => fetchText(ruleUrl, ua);
+
+    const tryGetAclIniForClash = async (): Promise<string | null> => {
+      if (templateResult.builtinTemplate?.acl4ssr_config_url) {
+        try {
+          const text = await fetchText(
+            templateResult.builtinTemplate.acl4ssr_config_url,
+            ua,
+          );
+          if (isAcl4ssrConfig(text)) {
+            return text;
+          }
+        } catch {
+          /* ignore */
+        }
+      }
+      if (templateResult.template && isAcl4ssrConfig(templateResult.template)) {
+        return templateResult.template;
+      }
+      if (summarizeTemplateMode(templateResult) === "none") {
+        try {
+          const text = await fetchText(ACL4SSR_DEFAULT_ONLINE_INI_URL, ua);
+          if (isAcl4ssrConfig(text)) {
+            return text;
+          }
+        } catch {
+          /* ignore */
+        }
+      }
+      return null;
+    };
+
+    let body: string;
+    let clashLayout: "acl4ssr-ini" | "minimal" = "minimal";
+    const aclIni = await tryGetAclIniForClash();
+    if (aclIni) {
+      const { yaml } = await buildClashYamlFromAcl4ssrIni(supportedClashNodes, aclIni, loadRuleList);
+      body = yaml;
+      clashLayout = "acl4ssr-ini";
+    } else {
+      if (url.searchParams.has("template_url") || url.searchParams.has("template_raw")) {
+        throw new AppError({
+          stage: "output",
+          code: "CLASH_TEMPLATE_NOT_ACL_INI",
+          message:
+            "Clash（OpenClash）的 template_url / template_raw 须为 ACL4SSR 风格 .ini（含 [custom] 与 ruleset=）。留空时默认拉取 ACL4SSR 在线规则；若仍失败请检查网络或链接内容。",
+        });
+      }
+      if (
+        url.searchParams.has("template") &&
+        Boolean(templateResult.builtinTemplate?.acl4ssr_config_url)
+      ) {
+        throw new AppError({
+          stage: "output",
+          code: "CLASH_ACL_INI_FETCH_FAILED",
+          message:
+            "内置 ACL 模板 .ini 拉取失败或正文无法识别，无法生成 OpenClash 配置；请稍后重试或使用 template_url 指向可用的 ACL4SSR 在线 ini。",
+        });
+      }
+      body = buildClashConfigDocument(filteredOutbounds);
+    }
 
     if (resultCacheKey && !hasRemoteTemplate) {
       await writeResultCache(env, resultCacheKey, body);
     }
 
+    const templateMode =
+      templateResult.builtinTemplate || !templateResult.template
+        ? "builtin"
+        : summarizeTemplateMode(templateResult) === "raw"
+          ? "raw"
+          : "remote";
+
     return new Response(body, {
       headers: buildTextHeaders(env, {
-        "content-type": "text/yaml; charset=utf-8",
-        "cache-control": "no-store",
-        "x-profile-id": profile.id,
-        "x-node-count": String(filteredOutbounds.length),
-        "x-output-format": outputFormat,
-        "x-supported-node-count": String(supportedClashNodes.length),
-        "x-cache-result": resultCacheState,
-        "x-cache-subscription": payloadResult.cacheState,
-        "x-cache-template": templateResult.cacheState,
-        "x-source-total": String(payloadResult.sourceStats.total),
-        "x-source-succeeded": String(payloadResult.sourceStats.succeeded),
-        "x-source-failed": String(payloadResult.sourceStats.failed),
-        "x-source-mode": payloadResult.sourceStats.mode,
+        ...yamlBaseHeaders(),
+        "x-template-mode": templateMode,
+        ...(templateResult.builtinTemplate
+          ? { "x-template-id": templateResult.builtinTemplate.id }
+          : {}),
+        "x-clash-layout": clashLayout,
       }),
     });
   }
 
-  let config;
-  try {
-    config = templateResult.template
-      ? renderTemplate(
-          templateResult.template,
-          buildRenderContext(profile, filteredOutbounds),
-        )
-      : buildSingBoxConfig(profile, filteredOutbounds);
-  } catch (error) {
-    throw new AppError({
-      stage: "template-render",
-      code: "TEMPLATE_RENDER_FAILED",
-      message: error instanceof Error ? error.message : "模板渲染失败",
-    });
-  }
+  const config = await renderSingBoxConfig(
+    env,
+    profile,
+    filteredOutbounds,
+    templateResult,
+  );
   const body = JSON.stringify(config, null, 2);
 
   if (resultCacheKey && !hasRemoteTemplate) {
@@ -780,7 +961,7 @@ async function handleConvert(request: Request, env: WorkerEnv): Promise<Response
 
 function handleProfiles(env: WorkerEnv): Response {
   const defaultDevice = env.DEFAULT_DEVICE ?? "openwrt";
-  const defaultVersion = env.DEFAULT_VERSION ?? FALLBACK_DEFAULT_VERSION;
+  const defaultVersion = env.DEFAULT_VERSION ?? "1.12.0";
   const defaultProfile = resolveProfile(defaultDevice, defaultVersion);
   const defaultRecommendation = getBuiltinTemplateRecommendation(
     defaultProfile.device,
@@ -807,6 +988,7 @@ function handleProfiles(env: WorkerEnv): Response {
         outputs: {
           "sing-box": "输出 sing-box JSON 配置",
           clash: "输出可直接导入 Clash / Clash.Meta 的完整 YAML 配置",
+          "clash-provider": "输出仅含 proxies 的 Clash provider YAML",
         },
         cache: {
           subscription: "默认缓存 10 分钟，失败时回退 24 小时旧内容",
@@ -959,21 +1141,19 @@ async function handleExplain(request: Request, env: WorkerEnv): Promise<Response
   if (includeRendered) {
     if (analysis.outputFormat === "sing-box") {
       try {
-        rendered = analysis.templateResult.template
-          ? renderTemplate(
-              analysis.templateResult.template,
-              buildRenderContext(analysis.profile, analysis.filteredOutbounds),
-            )
-          : buildSingBoxConfig(analysis.profile, analysis.filteredOutbounds);
+        rendered = await renderSingBoxConfig(
+          env,
+          analysis.profile,
+          analysis.filteredOutbounds,
+          analysis.templateResult,
+        );
       } catch (error) {
-        throw new AppError({
-          stage: "template-render",
-          code: "TEMPLATE_RENDER_FAILED",
-          message: error instanceof Error ? error.message : "模板渲染失败",
-        });
+        throw error;
       }
-    } else {
+    } else if (analysis.outputFormat === "clash") {
       rendered = buildClashConfigDocument(analysis.filteredOutbounds);
+    } else {
+      rendered = buildClashProviderDocument(analysis.filteredOutbounds);
     }
   }
 
@@ -987,59 +1167,61 @@ async function handleExplain(request: Request, env: WorkerEnv): Promise<Response
   );
 }
 
-function handleServiceMeta(env: WorkerEnv): Response {
+function htmlResponse(html: string, env: WorkerEnv, status = 200): Response {
+  return new Response(html, {
+    status,
+    headers: buildTextHeaders(env, {
+      "content-type": "text/html; charset=utf-8",
+      "cache-control": "no-store",
+    }),
+  });
+}
+
+function handleInfo(env: WorkerEnv): Response {
   return jsonResponse(
     {
       ok: true,
       service: "sub2singbox-worker",
-      console_ui: CONSOLE_UI_VERSION,
       endpoints: [
-        "/",
-        "/info",
-        "/ui-version",
         "/health",
         "/profiles",
         "/templates",
         "/validate",
         "/explain",
         "/convert",
+        "/info",
+        "/ui-version",
       ],
-      note: "以 Cloudflare Pages 部署：GET / 为操作界面；程序化元数据请用 GET /info。",
       example:
-        "/convert?device=openwrt&version=1.13.7&url=https://example.com/sub.txt&template_url=https://example.com/template.json",
+        "/convert?device=openwrt&version=1.12.0&url=https://example.com/sub.txt&template_url=https://example.com/template.json",
     },
     env,
   );
 }
 
+/** 控制台 HTML 内嵌版本标记，便于核对是否命中当前 Worker 部署。 */
 function handleUiVersion(env: WorkerEnv): Response {
   return jsonResponse(
     {
       ok: true,
-      console_ui: CONSOLE_UI_VERSION,
-      layout: "single-column",
-      source: "worker",
+      ui: "v3.4",
+      note: "与 pages-static/console.html 页脚「UI v3.4」一致；若不一致说明缓存或命中旧部署。",
     },
     env,
   );
 }
 
-/** Pages 上 `GET /`：返回与 `pages-static/console.html` 同步打包的 HTML（勿在 pages-dist 根目录留 `index.html` 以免抢路由）。 */
-function respondWebConsole(_request: Request, _env: WorkerEnv): Response {
-  const html = consoleHtml.includes("<body>")
-    ? consoleHtml.replace(
-        "<body>",
-        `<body style="display:block !important;margin:0;" data-sub2sb-worker="${CONSOLE_UI_VERSION}">`,
-      )
-    : consoleHtml;
-  return new Response(html, {
-    headers: {
-      "content-type": "text/html; charset=utf-8",
-      "cache-control": "no-store, no-cache, must-revalidate, max-age=0",
-      pragma: "no-cache",
-      expires: "0",
-      "x-sub2sb-console": CONSOLE_UI_VERSION,
-    },
+function handleRoot(env: WorkerEnv): Response {
+  return htmlResponse(consoleHtml, env);
+}
+
+function handleConsoleRedirect(): Response {
+  return new Response(null, {
+    status: 302,
+    headers: new Headers({
+      location: "/",
+      "cache-control": "no-store",
+    }),
   });
 }
 
@@ -1053,24 +1235,12 @@ export default {
 
     try {
       switch (url.pathname) {
-        case "/": {
-          if (request.method !== "GET" && request.method !== "HEAD") {
-            return jsonResponse({ ok: false, error: "仅支持 GET / HEAD" }, env, 405);
-          }
-          return respondWebConsole(request, env);
-        }
-        case "/console.html": {
-          if (request.method !== "GET" && request.method !== "HEAD") {
-            return jsonResponse({ ok: false, error: "仅支持 GET / HEAD" }, env, 405);
-          }
-          const canonical = new URL(request.url);
-          canonical.pathname = "/";
-          canonical.search = "";
-          canonical.hash = "";
-          return Response.redirect(canonical.toString(), 302);
-        }
+        case "/":
+          return handleRoot(env);
+        case "/console.html":
+          return handleConsoleRedirect();
         case "/info":
-          return handleServiceMeta(env);
+          return handleInfo(env);
         case "/ui-version":
           return handleUiVersion(env);
         case "/health":
@@ -1090,9 +1260,6 @@ export default {
         default:
           if (url.pathname.startsWith("/templates/")) {
             return handleTemplateDetail(request, env);
-          }
-          if (env.ASSETS) {
-            return env.ASSETS.fetch(request);
           }
           return jsonResponse(
             {

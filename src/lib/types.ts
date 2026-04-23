@@ -36,7 +36,11 @@ export interface BuiltinTemplateDefinition {
   compatible_devices: Device[];
   compatible_channels: VersionChannel[];
   tags: string[];
-  template_text: string;
+  template_url?: string;
+  source_repo?: string;
+  source_path?: string;
+  acl4ssr_config_url?: string;
+  fallback_template_text: string;
   featured?: boolean;
 }
 
@@ -94,8 +98,6 @@ export interface ConversionExplain {
 }
 
 export interface WorkerEnv {
-  /** Pages 高级模式：用于回退到静态资源；纯 Worker 部署时不存在 */
-  ASSETS?: Fetcher;
   ACCESS_PASSWORD?: string;
   DEFAULT_DEVICE?: string;
   DEFAULT_VERSION?: string;

@@ -40,18 +40,34 @@ describe("cache behavior", () => {
 
   it("uses result cache for builtin outputs", async () => {
     const kv = new MockKVNamespace();
-    const request = new Request(
-      "https://example.com/convert?device=openwrt&version=1.12.0&raw=ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ=@1.2.3.4:443#HK-SS",
-    );
+    const originalFetch = globalThis.fetch;
+    const miniAcl = `[custom]
+custom_proxy_group=P\`select\`[]DIRECT\`.*
+ruleset=P,[]FINAL`;
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("ACL4SSR_Online.ini")) {
+        return new Response(miniAcl, { status: 200 });
+      }
+      return originalFetch(input as RequestInfo, init);
+    };
 
-    const first = await worker.fetch(request, { CACHE_KV: kv });
-    const second = await worker.fetch(request, { CACHE_KV: kv });
-    const body = await second.text();
+    try {
+      const request = new Request(
+        "https://example.com/convert?device=openwrt&version=1.12.0&raw=ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ=@1.2.3.4:443#HK-SS",
+      );
 
-    expect(first.status).toBe(200);
-    expect(second.status).toBe(200);
-    expect(second.headers.get("x-cache-result")).toBe("hit");
-    expect(body).toContain("ss-1.2.3.4");
+      const first = await worker.fetch(request, { CACHE_KV: kv });
+      const second = await worker.fetch(request, { CACHE_KV: kv });
+      const body = await second.text();
+
+      expect(first.status).toBe(200);
+      expect(second.status).toBe(200);
+      expect(second.headers.get("x-cache-result")).toBe("hit");
+      expect(body).toContain("ss-1.2.3.4");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 
   it("uses stale subscription cache on upstream failure", async () => {
@@ -60,6 +76,9 @@ describe("cache behavior", () => {
     const originalFetch = globalThis.fetch;
     let firstRequest = true;
 
+    const miniAcl = `[custom]
+custom_proxy_group=P\`select\`[]DIRECT\`.*
+ruleset=P,[]FINAL`;
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
       if (url === subscriptionUrl) {
@@ -71,6 +90,9 @@ describe("cache behavior", () => {
           );
         }
         return new Response("upstream error", { status: 500 });
+      }
+      if (url.includes("ACL4SSR_Online.ini")) {
+        return new Response(miniAcl, { status: 200 });
       }
       return originalFetch(input as RequestInfo, init);
     }) as typeof fetch;

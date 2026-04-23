@@ -13,12 +13,23 @@ export function buildTunInbound(profile: DeviceProfile): JsonObject {
     mtu: 9000,
     auto_route: true,
     strict_route: profile.device === "openwrt" || profile.device === "ios",
-    sniff: true,
   };
+
+  if (profile.channel === "legacy") {
+    base.sniff = true;
+  }
+
+  if (profile.channel === "modern") {
+    // sing-box 1.10+ requires explicit tun prefixes; otherwise startup fails with:
+    // "missing interface address"
+    base.address = ["172.18.0.1/30"];
+  }
 
   if (profile.device === "openwrt") {
     base.interface_name = "singtun0";
     base.stack = "system";
+    // Recommended on Linux routers with fw4: better routing/perf and fewer docker-bridge conflicts.
+    base.auto_redirect = true;
   } else if (profile.device === "android") {
     base.stack = profile.channel === "modern" ? "mixed" : "gvisor";
   } else {
@@ -28,15 +39,19 @@ export function buildTunInbound(profile: DeviceProfile): JsonObject {
   return base;
 }
 
-export function buildMixedInbound(): JsonObject {
-  return {
+export function buildMixedInbound(profile: DeviceProfile): JsonObject {
+  const inbound: JsonObject = {
     type: "mixed",
     tag: "mixed-in",
     listen: "127.0.0.1",
     listen_port: 2080,
-    sniff: true,
-    set_system_proxy: false,
   };
+
+  if (profile.channel === "legacy") {
+    inbound.sniff = true;
+  }
+
+  return inbound;
 }
 
 export function buildDns(profile: DeviceProfile): JsonObject {
@@ -135,7 +150,7 @@ export function buildRenderContext(
 ): RenderContext {
   const inbounds = [buildTunInbound(profile)];
   if (profile.device === "pc") {
-    inbounds.push(buildMixedInbound());
+    inbounds.push(buildMixedInbound(profile));
   }
 
   const selectorOutbounds = buildSelectorOutbounds(nodes.map((node) => node.tag));

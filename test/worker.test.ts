@@ -7,22 +7,42 @@ describe("worker routes", () => {
   it("returns a sing-box config from /convert", async () => {
     const rawContent = "ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ=@1.2.3.4:443#HK-SS";
     const rawBase64 = Buffer.from(rawContent, "utf-8").toString("base64");
-    const request = new Request(
-      `https://example.com/convert?device=openwrt&version=1.12.0&raw_base64=1&raw=${encodeURIComponent(rawBase64)}`,
-    );
-
-    const response = await worker.fetch(request, {});
-    const data = (await response.json()) as {
-      outbounds: Array<{ tag: string }>;
-      dns: { servers: Array<{ type?: string }> };
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("ACL4SSR_Online.ini")) {
+        return new Response(
+          `[custom]
+custom_proxy_group=P\`select\`[]DIRECT\`.*
+ruleset=P,[]FINAL`,
+          { status: 200 },
+        );
+      }
+      return originalFetch(input as RequestInfo, init);
     };
 
-    expect(response.status).toBe(200);
-    expect(response.headers.get("x-profile-id")).toBe("openwrt-modern");
-    expect(response.headers.get("x-node-count")).toBe("1");
-    expect(data.outbounds.some((item: { tag: string }) => item.tag === "HK-SS")).toBe(true);
-    expect(data.dns.servers[0].type).toBe("local");
-    expect(response.headers.get("x-template-mode")).toBe("builtin");
+    try {
+      const request = new Request(
+        `https://example.com/convert?device=openwrt&version=1.12.0&raw_base64=1&raw=${encodeURIComponent(rawBase64)}`,
+      );
+
+      const response = await worker.fetch(request, {});
+      const data = (await response.json()) as {
+        outbounds: Array<{ tag: string }>;
+        dns: { servers: Array<{ type?: string }> };
+        route: { final: string };
+      };
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get("x-profile-id")).toBe("openwrt-modern");
+      expect(response.headers.get("x-node-count")).toBe("1");
+      expect(data.outbounds.some((item: { tag: string }) => item.tag === "HK-SS")).toBe(true);
+      expect(data.dns.servers[0].type).toBe("local");
+      expect(data.route.final).toBe("P");
+      expect(response.headers.get("x-template-mode")).toBe("builtin");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 
   it("protects /convert when ACCESS_PASSWORD is configured", async () => {
@@ -74,69 +94,78 @@ describe("worker routes", () => {
 
   it("returns clash yaml when format=clash", async () => {
     const rawContent = "ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ=@1.2.3.4:443#HK-SS";
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes("ACL4SSR_Online.ini")) {
+        return new Response(
+          `[custom]
+custom_proxy_group=P\`select\`[]DIRECT\`.*
+ruleset=P,[]FINAL`,
+          { status: 200 },
+        );
+      }
+      return originalFetch(input as RequestInfo, init);
+    };
+
+    try {
+      const request = new Request(
+        `https://example.com/convert?device=pc&version=1.13.7&format=clash&raw=${encodeURIComponent(rawContent)}`,
+      );
+
+      const response = await worker.fetch(request, {});
+      const text = await response.text();
+      const data = YAML.parse(text) as {
+        proxies: Array<{ name: string }>;
+        "proxy-groups": Array<{ name: string }>;
+        rules: string[];
+      };
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-type")).toContain("text/yaml");
+      expect(response.headers.get("x-output-format")).toBe("clash");
+      expect(response.headers.get("x-clash-layout")).toBe("acl4ssr-ini");
+      expect(data.proxies[0].name).toBe("HK-SS");
+      expect(data["proxy-groups"][0].name).toBe("P");
+      expect(data.rules).toContain("MATCH,P");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("returns clash provider yaml when format=clash-provider", async () => {
+    const rawContent = "http://user:pass@proxy.example.com:8080#HTTP-NODE";
     const request = new Request(
-      `https://example.com/convert?device=pc&version=1.13.7&format=clash&raw=${encodeURIComponent(rawContent)}`,
+      `https://example.com/convert?device=pc&version=1.13.7&format=clash-provider&raw=${encodeURIComponent(rawContent)}`,
     );
 
     const response = await worker.fetch(request, {});
     const text = await response.text();
     const data = YAML.parse(text) as {
-      proxies: Array<{ name: string }>;
-      "proxy-groups": Array<{ name: string }>;
+      proxies: Array<{ name: string; type: string }>;
     };
 
     expect(response.status).toBe(200);
-    expect(response.headers.get("content-type")).toContain("text/yaml");
-    expect(response.headers.get("x-output-format")).toBe("clash");
-    expect(data.proxies[0].name).toBe("HK-SS");
-    expect(data["proxy-groups"][0].name).toBe("Proxy");
-  });
-
-  it("allows clash convert without version (uses server default channel)", async () => {
-    const rawContent = "ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ=@1.2.3.4:443#HK-SS";
-    const request = new Request(
-      `https://example.com/convert?device=pc&format=clash&raw=${encodeURIComponent(rawContent)}`,
-    );
-    const response = await worker.fetch(request, {});
-    expect(response.status).toBe(200);
-    expect(response.headers.get("x-output-format")).toBe("clash");
-  });
-
-  it("requires version for sing-box convert (no default)", async () => {
-    const rawContent = "ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ=@1.2.3.4:443#HK-SS";
-    const request = new Request(
-      `https://example.com/convert?device=pc&raw=${encodeURIComponent(rawContent)}`,
-    );
-    const response = await worker.fetch(request, {});
-    const data = (await response.json()) as { ok: boolean; error: string };
-
-    expect(response.status).toBe(400);
-    expect(data.ok).toBe(false);
-    expect(data.error).toContain("version");
-  });
-
-  it("rejects deprecated format=clash-provider", async () => {
-    const request = new Request(
-      "https://example.com/convert?device=pc&version=1.13.7&format=clash-provider",
-    );
-    const response = await worker.fetch(request, {});
-    const data = (await response.json()) as { ok: boolean; error: string };
-
-    expect(response.status).toBe(400);
-    expect(data.ok).toBe(false);
-    expect(data.error).toContain("不支持的输出格式");
+    expect(response.headers.get("x-output-format")).toBe("clash-provider");
+    expect(data.proxies).toHaveLength(1);
+    expect(data.proxies[0]).toMatchObject({
+      name: "HTTP-NODE",
+      type: "http",
+    });
   });
 
   it("lists builtin templates", async () => {
     const response = await worker.fetch(new Request("https://example.com/templates"), {});
     const data = (await response.json()) as {
-      templates: Array<{ id: string; name: string }>;
+      templates: Array<{ id: string; name: string; template_url?: string }>;
     };
 
     expect(response.status).toBe(200);
-    expect(data.templates.some((item) => item.id === "default")).toBe(true);
-    expect(data.templates.some((item) => item.id === "manual")).toBe(true);
-    expect(data.templates.some((item) => item.id === "auto")).toBe(true);
+    expect(data.templates.length).toBeGreaterThanOrEqual(30);
+    expect(data.templates.some((item) => item.id === "online")).toBe(true);
+    expect(data.templates.some((item) => item.id === "online_noauto")).toBe(true);
+    expect(data.templates.some((item) => item.id === "online_mini_fallback")).toBe(true);
+    expect(data.templates.every((item) => typeof item.template_url === "string")).toBe(true);
   });
 
   it("returns template recommendations for current profile", async () => {
@@ -150,10 +179,10 @@ describe("worker routes", () => {
     };
 
     expect(response.status).toBe(200);
-    expect(data.recommendation?.primary_template_id).toBe("manual");
+    expect(data.recommendation?.primary_template_id).toBe("online_noauto");
     expect(
       data.templates.some(
-        (item) => item.id === "manual" && item.compatible_with_current_profile === true,
+        (item) => item.id === "online_noauto" && item.compatible_with_current_profile === true,
       ),
     ).toBe(true);
   });
@@ -166,19 +195,21 @@ describe("worker routes", () => {
     const data = (await response.json()) as {
       template: {
         id: string;
-        template_text: string;
+        fallback_template_text: string;
         recommended_for_current_profile?: boolean;
         recommendation_rank?: number;
+        template_url?: string;
       };
       recommendation?: { primary_template_id: string };
     };
 
     expect(response.status).toBe(200);
-    expect(data.template.id).toBe("manual");
-    expect(data.template.template_text).toContain('"type": "selector"');
+    expect(data.template.id).toBe("online_noauto");
+    expect(data.template.fallback_template_text).toContain('"type": "selector"');
+    expect(data.template.template_url).toContain("raw.githubusercontent.com/ACL4SSR/ACL4SSR");
     expect(data.template.recommended_for_current_profile).toBe(true);
     expect(data.template.recommendation_rank).toBe(1);
-    expect(data.recommendation?.primary_template_id).toBe("manual");
+    expect(data.recommendation?.primary_template_id).toBe("online_noauto");
   });
 
   it("validates conversion inputs without rendering response body", async () => {
@@ -223,22 +254,153 @@ describe("worker routes", () => {
 
   it("renders builtin template by id", async () => {
     const rawContent = "ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ=@1.2.3.4:443#HK-SS";
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url === "https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/config/ACL4SSR_Online_NoAuto.ini") {
+        return new Response(
+          `{
+            "dns": "{{ Dns }}",
+            "inbounds": "{{ Inbounds }}",
+            "outbounds": [
+              {
+                "type": "selector",
+                "tag": "proxy",
+                "outbounds": "{{ NodeTags(append=direct) }}"
+              },
+              { "type": "direct", "tag": "direct" },
+              "{{ Nodes }}"
+            ],
+            "route": "{{ Route }}"
+          }`,
+          { status: 200 },
+        );
+      }
+      return originalFetch(input as RequestInfo, init);
+    };
     const request = new Request(
       `https://example.com/convert?device=pc&version=1.13.7&raw=${encodeURIComponent(rawContent)}&template=${encodeURIComponent("builtin:manual")}`,
     );
 
-    const response = await worker.fetch(request, {});
+    try {
+      const response = await worker.fetch(request, {});
+      const data = (await response.json()) as {
+        outbounds?: Array<{ tag: string; type: string }>;
+        error?: string;
+      };
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get("x-template-mode")).toBe("builtin");
+      expect(response.headers.get("x-template-id")).toBe("online_noauto");
+      expect(data.outbounds?.some((item) => item.tag === "HK-SS")).toBe(true);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("builds sing-box route from ACL4SSR remote config", async () => {
+    const rawContent = "ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ=@1.2.3.4:443#HK-SS";
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url === "https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/config/ACL4SSR_Online_NoAuto.ini") {
+        return new Response(
+          `[custom]
+ruleset=🚀 节点选择,https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/Telegram.list
+ruleset=🎯 全球直连,[]GEOIP,CN
+ruleset=🐟 漏网之鱼,[]FINAL
+custom_proxy_group=🚀 节点选择\`select\`[]DIRECT\`.*
+custom_proxy_group=🎯 全球直连\`select\`[]DIRECT\`[]🚀 节点选择
+custom_proxy_group=🐟 漏网之鱼\`select\`[]🚀 节点选择\`[]🎯 全球直连\`.*
+enable_rule_generator=true
+overwrite_original_rules=true`,
+          { status: 200 },
+        );
+      }
+      if (url === "https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/Telegram.list") {
+        return new Response(
+          `DOMAIN-SUFFIX,telegram.org
+IP-CIDR,91.108.0.0/16,no-resolve`,
+          { status: 200 },
+        );
+      }
+      return originalFetch(input as RequestInfo, init);
+    };
+
+    try {
+      const request = new Request(
+        `https://example.com/convert?device=pc&version=1.13.7&raw=${encodeURIComponent(rawContent)}&template=${encodeURIComponent("builtin:manual")}`,
+      );
+      const response = await worker.fetch(request, {});
+      const data = (await response.json()) as {
+        outbounds: Array<{ tag: string; type: string }>;
+        route: { rules: Array<Record<string, unknown>>; final: string };
+      };
+
+      expect(response.status).toBe(200);
+      expect(data.outbounds.some((item) => item.tag === "🚀 节点选择" && item.type === "selector")).toBe(
+        true,
+      );
+      expect(data.route.final).toBe("🐟 漏网之鱼");
+      expect(
+        data.route.rules.some(
+          (rule) =>
+            Array.isArray(rule.domain_suffix) &&
+            rule.domain_suffix.includes("telegram.org") &&
+            rule.outbound === "🚀 节点选择",
+        ),
+      ).toBe(true);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("returns template recommendations for current profile", async () => {
+    const response = await worker.fetch(
+      new Request("https://example.com/templates?device=pc&version=1.13.7"),
+      {},
+    );
     const data = (await response.json()) as {
-      outbounds: Array<{ tag: string; type: string }>;
+      recommendation: {
+        primary_template_id: string;
+        alternative_template_ids: string[];
+      };
+      current_profile: {
+        device: string;
+        channel: string;
+      };
     };
 
     expect(response.status).toBe(200);
-    expect(response.headers.get("x-template-mode")).toBe("builtin");
-    expect(response.headers.get("x-template-id")).toBe("manual");
-    expect(data.outbounds.some((item) => item.tag === "proxy" && item.type === "selector")).toBe(
-      true,
+    expect(data.current_profile).toEqual({
+      device: "pc",
+      channel: "modern",
+    });
+    expect(data.recommendation.primary_template_id).toBe("online_noauto");
+    expect(data.recommendation.alternative_template_ids).toContain("online_mini_fallback");
+  });
+
+  it("returns builtin template detail by id again", async () => {
+    const response = await worker.fetch(
+      new Request("https://example.com/templates/manual?device=pc&version=1.13.7"),
+      {},
     );
-    expect(data.outbounds.some((item) => item.tag === "HK-SS")).toBe(true);
+    const data = (await response.json()) as {
+      template: {
+        id: string;
+        template_url?: string;
+        fallback_template_text?: string;
+        recommended_for_current_profile?: boolean;
+        recommendation_rank?: number;
+      };
+    };
+
+    expect(response.status).toBe(200);
+    expect(data.template.id).toBe("online_noauto");
+    expect(typeof data.template.template_url).toBe("string");
+    expect(typeof data.template.fallback_template_text).toBe("string");
+    expect(data.template.recommended_for_current_profile).toBe(true);
+    expect(data.template.recommendation_rank).toBe(1);
   });
 
   it("tolerates partial source failures by default", async () => {
@@ -256,6 +418,14 @@ describe("worker routes", () => {
       }
       if (url === badUrl) {
         return new Response("upstream error", { status: 500 });
+      }
+      if (url.includes("ACL4SSR_Online.ini")) {
+        return new Response(
+          `[custom]
+custom_proxy_group=P\`select\`[]DIRECT\`.*
+ruleset=P,[]FINAL`,
+          { status: 200 },
+        );
       }
       return originalFetch(input as RequestInfo, init);
     };
@@ -293,6 +463,14 @@ describe("worker routes", () => {
       }
       if (url === badUrl) {
         return new Response("upstream error", { status: 500 });
+      }
+      if (url.includes("ACL4SSR_Online.ini")) {
+        return new Response(
+          `[custom]
+custom_proxy_group=P\`select\`[]DIRECT\`.*
+ruleset=P,[]FINAL`,
+          { status: 200 },
+        );
       }
       return originalFetch(input as RequestInfo, init);
     };
@@ -335,6 +513,14 @@ describe("worker routes", () => {
           { status: 200 },
         );
       }
+      if (requestUrl.includes("ACL4SSR_Online.ini")) {
+        return new Response(
+          `[custom]
+custom_proxy_group=P\`select\`[]DIRECT\`.*
+ruleset=P,[]FINAL`,
+          { status: 200 },
+        );
+      }
       return originalFetch(input as RequestInfo, init);
     };
 
@@ -349,37 +535,5 @@ describe("worker routes", () => {
     } finally {
       globalThis.fetch = originalFetch;
     }
-  });
-
-  it("GET / serves console HTML; GET /info serves meta JSON", async () => {
-    const r1 = await worker.fetch(new Request("https://example.com/"), {});
-    expect(r1.status).toBe(200);
-    expect(r1.headers.get("content-type")).toContain("text/html");
-    expect(r1.headers.get("x-sub2sb-console")).toBe("v3");
-    const html = await r1.text();
-    expect(html).toContain("sub2singbox");
-    expect(html).toContain("UI v3");
-    expect(html).toContain('data-sub2sb-worker="v3"');
-
-    const r2 = await worker.fetch(new Request("https://example.com/info"), {});
-    expect(r2.status).toBe(200);
-    const meta = (await r2.json()) as { ok: boolean; endpoints: string[]; console_ui: string };
-    expect(meta.ok).toBe(true);
-    expect(meta.endpoints).toContain("/info");
-    expect(meta.endpoints).toContain("/ui-version");
-    expect(meta.console_ui).toBe("v3");
-
-    const r3 = await worker.fetch(new Request("https://example.com/ui-version"), {});
-    expect(r3.status).toBe(200);
-    const ver = (await r3.json()) as { ok: boolean; console_ui: string; source: string };
-    expect(ver.ok).toBe(true);
-    expect(ver.console_ui).toBe("v3");
-    expect(ver.source).toBe("worker");
-  });
-
-  it("GET /console.html redirects to / (avoid stale static ASSETS copy)", async () => {
-    const r = await worker.fetch(new Request("https://example.com/console.html"), {});
-    expect(r.status).toBe(302);
-    expect(r.headers.get("location")).toBe("https://example.com/");
   });
 });

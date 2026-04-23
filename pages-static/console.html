@@ -8,7 +8,7 @@
       name="description"
       content="将订阅链接转为 sing-box JSON 或 Clash YAML，可选设备与内建模板。"
     />
-    <title>订阅转换 · UI v3 · sub2singbox</title>
+    <title>订阅转换 · UI v3.4 · sub2singbox</title>
     <style>
       :root {
         --bg: #f0f2f5;
@@ -484,7 +484,7 @@
       >
         <header class="sub2sb-mast">
           <h1>订阅转换</h1>
-          <div class="sub2sb-badge">UI v3 · Worker 控制台</div>
+          <div class="sub2sb-badge">UI v3.1 · Worker 控制台</div>
           <p class="sub2sb-lead">同域部署：粘贴订阅或 Base64，一键生成 sing-box / Clash 配置。</p>
         </header>
 
@@ -514,7 +514,7 @@
               <div class="field-control">
                 <select id="device" class="form-select" aria-label="目标设备"></select>
                 <p id="runtime-hint-clash" class="field-hint hidden">
-                  Clash 模式不传 sing-box 版本；需指定 legacy/modern 时请暂选 Sing-Box 选好版本再切回。
+                  Clash（OpenClash）请求不传 <code>version</code>；分流规则与 Sing-Box 一致默认走 ACL4SSR 在线配置。若需指定 legacy/modern，请先选 Sing-Box 选好版本再切回 Clash。
                 </p>
               </div>
             </div>
@@ -524,18 +524,26 @@
                 <select id="version" class="form-select" aria-label="sing-box 版本"></select>
               </div>
             </div>
-            <div class="form-row hidden" id="template-card">
-              <label class="field-label" for="template_choice">规则模板：</label>
+            <div class="form-row hidden" id="template-card-sing">
+              <label class="field-label" for="template_preset">分流规则</label>
               <div class="field-control">
-                <input
-                  id="template_choice"
-                  type="text"
-                  list="template_builtin_datalist"
-                  spellcheck="false"
-                  autocomplete="off"
-                  placeholder="留空自动；下选内建或填 builtin:ID；https://… 为远程 JSON 模板"
-                />
-                <datalist id="template_builtin_datalist"></datalist>
+                <select id="template_preset" class="form-select" aria-label="ACL4SSR 预设或自定义 URL">
+                  <option value="">服务端默认（ACL4SSR 在线）</option>
+                </select>
+                <div id="template-custom-url-row" class="hidden" style="margin-top: 0.55rem">
+                  <input
+                    id="template_custom_url"
+                    type="url"
+                    spellcheck="false"
+                    autocomplete="off"
+                    placeholder="https://…/your-acl.ini（须为 ACL4SSR 风格 .ini）"
+                    aria-label="自定义 ACL 分流 ini 地址"
+                  />
+                </div>
+                <p class="field-hint" style="margin-top: 0.35rem">
+                  上栏选 <strong>ACL4SSR 预设</strong>（与 <code>/templates</code> 内建一致，传 <code>template=builtin:…</code>）或选
+                  <strong>自定义 URL</strong> 后填写在线 <code>.ini</code>。选「服务端默认」不传模板参数，由后端使用默认 ACL4SSR 在线分流。Sing-Box 若要用 JSON 模板请走 API。
+                </p>
               </div>
             </div>
             <div class="form-row">
@@ -617,7 +625,7 @@
         <a href="https://xlsubweb.vercel.app/" rel="noopener noreferrer">xlsubweb</a>
         类订阅转换站；本服务后端为自研 sing-box / Clash 转换逻辑。
         <p class="sub2sb-ui-mark">
-          <strong>UI v3</strong> · 左标签右控件 · 由本域 Worker 返回。若看不到本行或浏览器标签无「UI v3」，说明未命中当前部署（可打开 <a href="/ui-version">/ui-version</a> 核对 JSON）。
+          <strong>UI v3.4</strong> · 左标签右控件 · 由本域 Worker 返回。若看不到本行或浏览器标签无「UI v3.4」，说明未命中当前部署（可打开 <a href="/ui-version">/ui-version</a> 核对 JSON）。
         </p>
       </footer>
     </div>
@@ -629,9 +637,10 @@
         const versionEl = $("version");
         const formatEl = $("format");
         const subscriptionEl = $("subscription");
-        const templateChoiceEl = $("template_choice");
-        const templateBuiltinDatalistEl = $("template_builtin_datalist");
-        const templateCard = $("template-card");
+        const templateCardSing = $("template-card-sing");
+        const templatePresetEl = $("template_preset");
+        const templateCustomUrlRow = $("template-custom-url-row");
+        const templateCustomUrlEl = $("template_custom_url");
         const includeEl = $("filter_include");
         const excludeEl = $("filter_exclude");
         const versionFieldWrap = $("version-field-wrap");
@@ -652,29 +661,73 @@
         /** @type {Array<{ device: string; channel: string; recommendedVersions: string[] }>} */
         let profilesCache = [];
 
-        /** 当前 /templates 返回的内建项，用于解析仅输入 id（如 manual）时的 template 参数。 */
-        let templateBuiltinOptionValues = new Set();
+        function syncCustomUrlRow() {
+          const show = templatePresetEl.value === "__custom__";
+          templateCustomUrlRow.classList.toggle("hidden", !show);
+        }
 
-        /** 将「模板」输入解析为查询参数（内建 template 或远程 template_url，互斥）。 */
-        function applySingboxTemplateToParams(p, raw) {
-          const t = raw.trim();
-          if (!t) return;
-          if (/^https?:\/\//i.test(t)) {
-            p.set("template_url", t);
+        /** 下拉 builtin 或自定义 template_url；默认项不传参。 */
+        function applyShuntToParams(p) {
+          const preset = templatePresetEl.value;
+          if (preset === "__custom__") {
+            const u = templateCustomUrlEl.value.trim();
+            if (!u) {
+              throw new Error("已选择「自定义 URL」，请填写以 http(s):// 开头的 ACL .ini 地址。");
+            }
+            if (!/^https?:\/\//i.test(u)) {
+              throw new Error("自定义分流 URL 须以 http:// 或 https:// 开头。");
+            }
+            p.set("template_url", u);
             return;
           }
-          if (t.startsWith("builtin:")) {
-            p.set("template", t);
-            return;
+          if (preset && preset.startsWith("builtin:")) {
+            p.set("template", preset);
           }
-          const prefixed = "builtin:" + t;
-          if (templateBuiltinOptionValues.has(prefixed)) {
-            p.set("template", prefixed);
-            return;
+        }
+
+        async function refreshShuntPresets() {
+          const fmt = formatEl.value;
+          if (fmt !== "sing-box" && fmt !== "clash") return;
+          const d = deviceEl.value || serverDefaults.device;
+          const v =
+            fmt === "sing-box"
+              ? effectiveVersion()
+              : serverDefaults.version || versionEl.value.trim() || PREFERRED_SINGBOX_VERSION;
+          if (!v) return;
+          const r = await fetch("/templates?" + new URLSearchParams({ device: d, version: v }));
+          if (!r.ok) return;
+          const data = await r.json();
+          const prev = templatePresetEl.value;
+          templatePresetEl.innerHTML = "";
+          {
+            const o = document.createElement("option");
+            o.value = "";
+            o.textContent = "服务端默认（ACL4SSR 在线）";
+            templatePresetEl.appendChild(o);
           }
-          throw new Error(
-            "模板：请从下拉选择内建项、输入完整 builtin:ID，或填写以 http:// / https:// 开头的远程模板地址。",
-          );
+          for (const t of data.templates || []) {
+            const tags = t.tags;
+            const isAcl = Array.isArray(tags) && tags.includes("acl4ssr");
+            if (!isAcl) continue;
+            const o = document.createElement("option");
+            o.value = "builtin:" + t.id;
+            let label = t.title || t.name || t.id;
+            if (t.compatible_with_current_profile === false) label += "（可能不兼容）";
+            o.textContent = label;
+            templatePresetEl.appendChild(o);
+          }
+          {
+            const o = document.createElement("option");
+            o.value = "__custom__";
+            o.textContent = "自定义 URL…";
+            templatePresetEl.appendChild(o);
+          }
+          if (prev && [...templatePresetEl.options].some((opt) => opt.value === prev)) {
+            templatePresetEl.value = prev;
+          } else {
+            templatePresetEl.value = "";
+          }
+          syncCustomUrlRow();
         }
 
         function setStatus(msg, kind) {
@@ -685,20 +738,25 @@
 
         function syncFormatUi() {
           const isSing = formatEl.value === "sing-box";
-          templateCard.classList.toggle("hidden", !isSing);
+          const isClash = formatEl.value === "clash";
+          templateCardSing.classList.toggle("hidden", !(isSing || isClash));
           if (!isSing) {
-            templateChoiceEl.value = "";
+            templatePresetEl.value = "";
+            templateCustomUrlEl.value = "";
+            syncCustomUrlRow();
           }
 
           versionFieldWrap.classList.toggle("hidden", !isSing);
           runtimeHintClash.classList.toggle("hidden", isSing);
 
-          if (!isSing) {
+          if (isSing) {
+            fillVersionSelect();
+          } else {
             versionEl.value = "";
             userChosenSingboxVersion = "";
-          } else {
-            fillVersionSelect();
-            void refreshTemplates();
+          }
+          if (isSing || isClash) {
+            void refreshShuntPresets();
           }
         }
 
@@ -792,47 +850,17 @@
             deviceEl.value = data.defaults.device || deviceEl.value;
           }
           fillVersionSelect();
-          await refreshTemplates();
-        }
-
-        async function refreshTemplates() {
-          if (formatEl.value !== "sing-box") return;
-          const d = deviceEl.value || serverDefaults.device;
-          const v = effectiveVersion();
-          if (!v) return;
-          const r = await fetch("/templates?" + new URLSearchParams({ device: d, version: v }));
-          if (!r.ok) return;
-          const data = await r.json();
-          const first = templateChoiceEl.value;
-          templateBuiltinDatalistEl.innerHTML = "";
-          templateBuiltinOptionValues = new Set();
-          {
-            const o = document.createElement("option");
-            o.value = "";
-            o.textContent = "自动（按设备/版本）";
-            templateBuiltinDatalistEl.appendChild(o);
-          }
-          for (const t of data.templates || []) {
-            const o = document.createElement("option");
-            const val = "builtin:" + t.id;
-            o.value = val;
-            let label = t.title || t.name || t.id;
-            if (t.compatible_with_current_profile === false) label += "（可能不兼容）";
-            o.textContent = label;
-            templateBuiltinDatalistEl.appendChild(o);
-            templateBuiltinOptionValues.add(val);
-          }
-          templateChoiceEl.value = first;
+          await refreshShuntPresets();
         }
 
         deviceEl.addEventListener("change", () => {
           fillVersionSelect();
-          void refreshTemplates();
+          void refreshShuntPresets();
           updateOpenLink("/convert");
         });
         versionEl.addEventListener("change", () => {
           userChosenSingboxVersion = versionEl.value.trim();
-          void refreshTemplates();
+          void refreshShuntPresets();
           updateOpenLink("/convert");
         });
 
@@ -876,8 +904,8 @@
 
           applySubscriptionInputToParams(p, subscriptionEl.value);
 
-          if (fmt === "sing-box") {
-            applySingboxTemplateToParams(p, templateChoiceEl.value);
+          if (fmt === "sing-box" || fmt === "clash") {
+            applyShuntToParams(p);
           }
 
           const pw = passwordEl.value.trim();
@@ -902,7 +930,11 @@
         ["input", "change"].forEach((ev) => {
           subscriptionEl.addEventListener(ev, () => updateOpenLink("/convert"));
           passwordEl.addEventListener(ev, () => updateOpenLink("/convert"));
-          templateChoiceEl.addEventListener(ev, () => updateOpenLink("/convert"));
+          templatePresetEl.addEventListener(ev, () => {
+            syncCustomUrlRow();
+            updateOpenLink("/convert");
+          });
+          templateCustomUrlEl.addEventListener(ev, () => updateOpenLink("/convert"));
           includeEl.addEventListener(ev, () => updateOpenLink("/convert"));
           excludeEl.addEventListener(ev, () => updateOpenLink("/convert"));
         });

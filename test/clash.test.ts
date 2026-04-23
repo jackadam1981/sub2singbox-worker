@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import YAML from "yaml";
 
-import { buildClashConfigDocument, toClashProxy } from "../src/lib/clash";
+import {
+  buildClashConfigDocument,
+  buildClashProviderDocument,
+  toClashProxy,
+} from "../src/lib/clash";
 
 describe("clash output", () => {
   it("converts sing-box outbound to clash proxy", () => {
@@ -58,5 +62,26 @@ describe("clash output", () => {
     expect(parsed.proxies[0].name).toBe("HK-SS");
     expect(parsed["proxy-groups"].map((item) => item.name)).toEqual(["Proxy", "Auto"]);
     expect(parsed.rules).toContain("MATCH,Proxy");
+  });
+
+  it("builds clash provider yaml", () => {
+    const yamlText = buildClashProviderDocument([
+      {
+        type: "http",
+        tag: "HTTP-Node",
+        server: "proxy.example.com",
+        server_port: 8080,
+      },
+    ]);
+
+    const parsed = YAML.parse(yamlText) as {
+      proxies: Array<{ name: string; type: string }>;
+    };
+
+    expect(parsed.proxies).toHaveLength(1);
+    expect(parsed.proxies[0]).toMatchObject({
+      name: "HTTP-Node",
+      type: "http",
+    });
   });
 });
