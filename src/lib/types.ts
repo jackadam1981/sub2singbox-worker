@@ -70,6 +70,8 @@ export interface ConversionExplain {
     device: Device;
     channel: VersionChannel;
   };
+  /** 与 ACL 分流正交的 sing-box 骨架：已选功能规范化串（`default` 或逗号分隔 id，见 `skeleton` 参数）。 */
+  skeleton_id: string;
   output_format: string;
   template: {
     mode: "builtin" | "remote" | "raw" | "none";

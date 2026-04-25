@@ -8,7 +8,7 @@
       name="description"
       content="将订阅链接转为 sing-box JSON 或 Clash YAML，可选设备与内建模板。"
     />
-    <title>订阅转换 · UI v3.4 · sub2singbox</title>
+    <title>订阅转换 · UI v4.3 · sub2singbox</title>
     <style>
       :root {
         --bg: #f0f2f5;
@@ -244,6 +244,57 @@
         min-height: 2.65rem;
         cursor: pointer;
       }
+      .skeleton-scopes {
+        display: flex;
+        flex-direction: column;
+        gap: 0.75rem;
+        width: 100%;
+      }
+      .skeleton-scope-title {
+        font-size: 0.8rem;
+        font-weight: 600;
+        color: var(--muted);
+        margin: 0 0 0.35rem;
+        letter-spacing: 0.02em;
+      }
+      .skeleton-scope-block .skeleton-features {
+        margin: 0;
+      }
+      .skeleton-features {
+        display: flex;
+        flex-direction: column;
+        gap: 0.55rem;
+        align-items: stretch;
+      }
+      .skeleton-item {
+        padding: 0.45rem 0.55rem;
+        border-radius: 8px;
+        border: 1px solid var(--border);
+        background: rgba(255, 255, 255, 0.72);
+      }
+      .skeleton-item label {
+        display: flex;
+        align-items: flex-start;
+        gap: 0.45rem;
+        cursor: pointer;
+        font-size: 0.9rem;
+        font-weight: 500;
+        line-height: 1.35;
+      }
+      .skeleton-item input[type="checkbox"] {
+        width: auto;
+        margin: 0.15rem 0 0;
+        flex-shrink: 0;
+        cursor: pointer;
+      }
+      .skeleton-item-desc {
+        margin: 0.35rem 0 0;
+        padding-left: 1.55rem;
+        font-size: 0.8rem;
+        font-weight: 400;
+        color: var(--muted);
+        line-height: 1.45;
+      }
       select:focus,
       input:focus {
         outline: none;
@@ -476,7 +527,7 @@
           display: grid !important;
           grid-template-columns: minmax(0, 1fr) !important;
           grid-auto-flow: row !important;
-          gap: 1rem;
+          gap: 0.85rem;
           width: 100% !important;
           max-width: 100% !important;
           box-sizing: border-box;
@@ -484,7 +535,7 @@
       >
         <header class="sub2sb-mast">
           <h1>订阅转换</h1>
-          <div class="sub2sb-badge">UI v3.1 · Worker 控制台</div>
+          <div class="sub2sb-badge">UI v4.3 · Worker 控制台</div>
           <p class="sub2sb-lead">同域部署：粘贴订阅或 Base64，一键生成 sing-box / Clash 配置。</p>
         </header>
 
@@ -509,12 +560,19 @@
                 </select>
               </div>
             </div>
-            <div class="form-row">
+            <div class="form-row" id="device-field-wrap">
               <label class="field-label" for="device">目标设备：</label>
               <div class="field-control">
                 <select id="device" class="form-select" aria-label="目标设备"></select>
-                <p id="runtime-hint-clash" class="field-hint hidden">
-                  Clash（OpenClash）请求不传 <code>version</code>；分流规则与 Sing-Box 一致默认走 ACL4SSR 在线配置。若需指定 legacy/modern，请先选 Sing-Box 选好版本再切回 Clash。
+              </div>
+            </div>
+            <div class="form-row hidden" id="clash-only-hint-row">
+              <span class="field-label field-label--spacer" aria-hidden="true">&nbsp;</span>
+              <div class="field-control">
+                <p id="runtime-hint-clash" class="field-hint" style="margin: 0">
+                  Clash 不区分目标设备，请求<strong>不传</strong> <code>device</code> 与
+                  <code>version</code>（由服务默认）。分流/骨架仍生效。若你曾选过 Sing-Box
+                  版本，可在切回 Sing-Box 时继续使用。
                 </p>
               </div>
             </div>
@@ -522,6 +580,20 @@
               <label class="field-label" for="version">sing-box 版本：</label>
               <div class="field-control">
                 <select id="version" class="form-select" aria-label="sing-box 版本"></select>
+              </div>
+            </div>
+            <div class="form-row">
+              <label class="field-label" for="password">访问密码：</label>
+              <div class="field-control">
+                <input
+                  id="password"
+                  type="password"
+                  placeholder="未开启 ACCESS_PASSWORD 可留空"
+                  autocomplete="current-password"
+                />
+                <p class="field-hint" style="margin-top: 0.35rem">
+                  用于访问控制台按钮与转换接口；不需要时可留空。若勾选「面板 API 开放到局域网」，此处也会作为面板 API 的密钥（secret）。
+                </p>
               </div>
             </div>
             <div class="form-row hidden" id="template-card-sing">
@@ -546,17 +618,18 @@
                 </p>
               </div>
             </div>
-            <div class="form-row">
-              <label class="field-label" for="password">访问密码：</label>
-              <div class="field-control">
-                <input
-                  id="password"
-                  type="password"
-                  placeholder="未开启 ACCESS_PASSWORD 可留空"
-                  autocomplete="current-password"
-                />
+            <details class="advanced hidden" id="skeleton-card-sing">
+              <summary id="skeleton-label">骨架选项（可选，默认折叠）</summary>
+              <div class="inner form-rows" style="padding-top: 0.5rem; gap: 0.65rem">
+                <div id="skeleton_features" class="skeleton-scopes" role="group" aria-labelledby="skeleton-label"></div>
+                <p class="field-hint" style="margin-top: 0">
+                  按<strong>共用 / Sing-Box / Clash</strong> 分组。共用里含「调试日志」与 <strong>DNS 防泄漏</strong>。与分流规则正交。示例
+                  <code>skeleton=log_debug,dns_anti_leak</code>（逗号、空格、<code>|</code>、<code>+</code> 均可分隔）。数据来自 <code>/profiles</code> 的 <code>skeletons</code>（含
+                  <code>scope</code>、<code>detail</code>）。按当前「生成类型」<strong>只显示与 Sing-Box 或 Clash 相关</strong>的项；切回另一格式时仍会保留你之前的勾选。全不选则不传
+                  <code>skeleton</code>。
+                </p>
               </div>
-            </div>
+            </details>
           </div>
 
           <details class="advanced" style="margin-top: 0.85rem">
@@ -625,7 +698,7 @@
         <a href="https://xlsubweb.vercel.app/" rel="noopener noreferrer">xlsubweb</a>
         类订阅转换站；本服务后端为自研 sing-box / Clash 转换逻辑。
         <p class="sub2sb-ui-mark">
-          <strong>UI v3.4</strong> · 左标签右控件 · 由本域 Worker 返回。若看不到本行或浏览器标签无「UI v3.4」，说明未命中当前部署（可打开 <a href="/ui-version">/ui-version</a> 核对 JSON）。
+          <strong>UI v4.3</strong> · 左标签右控件 · 由本域 Worker 返回。若看不到本行或浏览器标签无「UI v4.3」，说明未命中当前部署（可打开 <a href="/ui-version">/ui-version</a> 核对 JSON）。
         </p>
       </footer>
     </div>
@@ -638,13 +711,16 @@
         const formatEl = $("format");
         const subscriptionEl = $("subscription");
         const templateCardSing = $("template-card-sing");
+        const skeletonCardSing = $("skeleton-card-sing");
+        const skeletonFeaturesEl = $("skeleton_features");
         const templatePresetEl = $("template_preset");
         const templateCustomUrlRow = $("template-custom-url-row");
         const templateCustomUrlEl = $("template_custom_url");
         const includeEl = $("filter_include");
         const excludeEl = $("filter_exclude");
         const versionFieldWrap = $("version-field-wrap");
-        const runtimeHintClash = $("runtime-hint-clash");
+        const deviceFieldWrap = $("device-field-wrap");
+        const clashOnlyHintRow = $("clash-only-hint-row");
         const passwordEl = $("password");
         const outEl = $("out");
         const statusEl = $("status");
@@ -660,6 +736,10 @@
         let userChosenSingboxVersion = "";
         /** @type {Array<{ device: string; channel: string; recommendedVersions: string[] }>} */
         let profilesCache = [];
+        /** @type {Array<{ id: string; scope?: string; title?: string; description?: string; detail?: string }>} */
+        let skeletonsCache = [];
+        /** 用户勾选的骨架 id（跨格式保留；请求时按当前生成类型过滤）。 */
+        const skeletonPickSet = new Set();
 
         function syncCustomUrlRow() {
           const show = templatePresetEl.value === "__custom__";
@@ -736,18 +816,121 @@
           if (!msg) statusEl.classList.add("hidden");
         }
 
+        function scopeForSkeletonId(id) {
+          const e = skeletonsCache.find((x) => x.id === id);
+          if (e) return skeletonScopeOf(e);
+          return SKELETON_SCOPE_FALLBACK[id] || "sing-box";
+        }
+
+        /** 当前生成类型下是否应参与展示与 `skeleton=` 参数。 */
+        function skeletonIdRelevantToFormat(id, fmt) {
+          if (fmt !== "sing-box" && fmt !== "clash") return false;
+          const sc = scopeForSkeletonId(id);
+          if (sc === "shared") return true;
+          if (fmt === "sing-box") return sc === "sing-box";
+          if (fmt === "clash") return sc === "clash";
+          return false;
+        }
+
+        function getRelevantSkeletonIds() {
+          const fmt = formatEl.value;
+          return [...skeletonPickSet].filter((id) => skeletonIdRelevantToFormat(id, fmt)).sort();
+        }
+
+        const SKELETON_SCOPE_BLOCKS = [
+          ["shared", "共用"],
+          ["sing-box", "Sing-Box"],
+          ["clash", "Clash"],
+        ];
+        const SKELETON_SCOPE_FALLBACK = {
+          log_debug: "shared",
+          dns_anti_leak: "shared",
+          dns_hijack: "shared",
+          clash_dns_hijack: "shared",
+          clash_api: "sing-box",
+          clash_api_lan: "sing-box",
+          clash_tun: "clash",
+          clash_fake_ip: "clash",
+          clash_sniffer: "clash",
+        };
+
+        function skeletonScopeOf(entry) {
+          const s = entry.scope;
+          if (s === "shared" || s === "sing-box" || s === "clash") return s;
+          return SKELETON_SCOPE_FALLBACK[entry.id] || "sing-box";
+        }
+
+        function renderSkeletonFeatures(skList, formatKey) {
+          const fmt = formatKey === "clash" ? "clash" : "sing-box";
+          skeletonFeaturesEl.innerHTML = "";
+          for (const [scopeKey, scopeTitle] of SKELETON_SCOPE_BLOCKS) {
+            if (fmt === "sing-box" && scopeKey === "clash") continue;
+            if (fmt === "clash" && scopeKey === "sing-box") continue;
+            const items = skList.filter((s) => skeletonScopeOf(s) === scopeKey);
+            if (!items.length) continue;
+            const block = document.createElement("div");
+            block.className = "skeleton-scope-block";
+            const head = document.createElement("div");
+            head.className = "skeleton-scope-title";
+            head.textContent = scopeTitle;
+            block.appendChild(head);
+            const row = document.createElement("div");
+            row.className = "skeleton-features";
+            row.setAttribute("role", "group");
+            row.setAttribute("aria-label", scopeTitle);
+            for (const s of items) {
+              const id = s.id;
+              if (!id) continue;
+              const wrap = document.createElement("div");
+              wrap.className = "skeleton-item";
+              const label = document.createElement("label");
+              const cb = document.createElement("input");
+              cb.type = "checkbox";
+              cb.setAttribute("data-skeleton-id", id);
+              cb.checked = skeletonPickSet.has(id);
+              const span = document.createElement("span");
+              span.textContent = s.title || id;
+              const tip = (s.detail && String(s.detail).trim()) || (s.description && String(s.description).trim()) || "";
+              if (tip) label.title = tip;
+              label.appendChild(cb);
+              label.appendChild(span);
+              wrap.appendChild(label);
+              if (s.description && String(s.description).trim()) {
+                const desc = document.createElement("p");
+                desc.className = "skeleton-item-desc";
+                desc.textContent = s.description;
+                wrap.appendChild(desc);
+              }
+              row.appendChild(wrap);
+            }
+            block.appendChild(row);
+            skeletonFeaturesEl.appendChild(block);
+          }
+        }
+
+        function clearSkeletonSelection() {
+          skeletonPickSet.clear();
+          for (const input of skeletonFeaturesEl.querySelectorAll('input[type="checkbox"]')) {
+            input.checked = false;
+          }
+        }
+
+        function applySkeletonToParams(p) {
+          const ids = getRelevantSkeletonIds();
+          if (ids.length) {
+            p.set("skeleton", ids.join(","));
+          }
+        }
+
         function syncFormatUi() {
           const isSing = formatEl.value === "sing-box";
           const isClash = formatEl.value === "clash";
           templateCardSing.classList.toggle("hidden", !(isSing || isClash));
-          if (!isSing) {
-            templatePresetEl.value = "";
-            templateCustomUrlEl.value = "";
-            syncCustomUrlRow();
-          }
+          skeletonCardSing.classList.toggle("hidden", !(isSing || isClash));
 
           versionFieldWrap.classList.toggle("hidden", !isSing);
-          runtimeHintClash.classList.toggle("hidden", isSing);
+          deviceFieldWrap.classList.toggle("hidden", isClash);
+          clashOnlyHintRow.classList.toggle("hidden", !isClash);
 
           if (isSing) {
             fillVersionSelect();
@@ -757,6 +940,9 @@
           }
           if (isSing || isClash) {
             void refreshShuntPresets();
+            if (skeletonsCache.length) {
+              renderSkeletonFeatures(skeletonsCache, isClash ? "clash" : "sing-box");
+            }
           }
         }
 
@@ -851,6 +1037,8 @@
           }
           fillVersionSelect();
           await refreshShuntPresets();
+          skeletonsCache = data.skeletons || [];
+          renderSkeletonFeatures(skeletonsCache, formatEl.value === "clash" ? "clash" : "sing-box");
         }
 
         deviceEl.addEventListener("change", () => {
@@ -890,8 +1078,10 @@
 
         function buildParams() {
           const p = new URLSearchParams();
-          p.set("device", deviceEl.value || serverDefaults.device);
           const fmt = formatEl.value;
+          if (fmt !== "clash") {
+            p.set("device", deviceEl.value || serverDefaults.device);
+          }
           const verChosen = versionEl.value.trim();
           if (fmt === "sing-box") {
             if (!verChosen) {
@@ -899,13 +1089,14 @@
             }
             p.set("version", verChosen);
           }
-          /* Clash 等：不传 version，由服务端默认解析通道处理 */
+          /* Clash：不传 device / version，由服务端默认；其它非 sing-box 保留 format */
           if (fmt !== "sing-box") p.set("format", fmt);
 
           applySubscriptionInputToParams(p, subscriptionEl.value);
 
           if (fmt === "sing-box" || fmt === "clash") {
             applyShuntToParams(p);
+            applySkeletonToParams(p);
           }
 
           const pw = passwordEl.value.trim();
@@ -926,6 +1117,16 @@
             btnOpen.href = "#";
           }
         }
+
+        skeletonFeaturesEl.addEventListener("change", (e) => {
+          const t = e.target;
+          if (t && t.matches && t.matches("input[type=checkbox][data-skeleton-id]")) {
+            const id = t.getAttribute("data-skeleton-id");
+            if (t.checked) skeletonPickSet.add(id);
+            else skeletonPickSet.delete(id);
+          }
+          updateOpenLink("/convert");
+        });
 
         ["input", "change"].forEach((ev) => {
           subscriptionEl.addEventListener(ev, () => updateOpenLink("/convert"));

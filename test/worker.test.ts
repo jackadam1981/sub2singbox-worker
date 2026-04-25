@@ -230,6 +230,40 @@ ruleset=P,[]FINAL`,
     expect(data.nodes.filtered_total).toBe(1);
   });
 
+  it("lists combinable skeleton features on /profiles", async () => {
+    const response = await worker.fetch(new Request("https://example.com/profiles"), {});
+    const data = (await response.json()) as {
+      skeletons: Array<{ id: string; scope: string }>;
+    };
+    expect(response.status).toBe(200);
+    const ids = new Set(data.skeletons.map((s) => s.id));
+    expect(ids.has("tun_only")).toBe(true);
+    expect(ids.has("cache_all")).toBe(true);
+    expect(ids.has("ipv4_dns")).toBe(true);
+    expect(ids.has("clash_tun")).toBe(true);
+    expect(ids.has("default")).toBe(false);
+    expect(data.skeletons.length).toBeGreaterThanOrEqual(16);
+    const allowedScopes = new Set(["shared", "sing-box", "clash"]);
+    for (const s of data.skeletons) {
+      expect(allowedScopes.has(s.scope)).toBe(true);
+    }
+    expect(data.skeletons.filter((s) => s.scope === "shared").map((s) => s.id).sort()).toEqual(
+      ["dns_anti_leak", "log_debug"].sort(),
+    );
+    expect(data.skeletons.filter((s) => s.scope === "clash").length).toBe(3);
+  });
+
+  it("rejects invalid skeleton id", async () => {
+    const rawContent = "ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ=@1.2.3.4:443#HK-SS";
+    const response = await worker.fetch(
+      new Request(
+        `https://example.com/validate?device=pc&version=1.13.7&raw=${encodeURIComponent(rawContent)}&skeleton=not-a-real-id`,
+      ),
+      {},
+    );
+    expect(response.status).toBe(400);
+  });
+
   it("explains conversion pipeline details", async () => {
     const rawContent = "ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ=@1.2.3.4:443#HK-SS";
     const request = new Request(
@@ -245,11 +279,25 @@ ruleset=P,[]FINAL`,
     };
 
     expect(response.status).toBe(200);
+    expect(data.explain.skeleton_id).toBe("default");
     expect(data.explain.output_format).toBe("sing-box");
     expect(data.explain.sources.total).toBe(1);
     expect(data.explain.sources.entries[0].payload_kind).toContain("uri");
     expect(data.explain.nodes.filtered_total).toBe(1);
     expect(data.explain.nodes.tags).toContain("HK-SS");
+  });
+
+  it("explain reflects combined skeleton query", async () => {
+    const rawContent = "ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ=@1.2.3.4:443#HK-SS";
+    const response = await worker.fetch(
+      new Request(
+        `https://example.com/explain?device=pc&version=1.13.7&raw=${encodeURIComponent(rawContent)}&skeleton=tun_only,ipv4_dns`,
+      ),
+      {},
+    );
+    const data = (await response.json()) as { explain: { skeleton_id: string } };
+    expect(response.status).toBe(200);
+    expect(data.explain.skeleton_id).toBe("tun_only,ipv4_dns");
   });
 
   it("renders builtin template by id", async () => {

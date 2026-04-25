@@ -28,6 +28,12 @@ import {
   isAcl4ssrConfig,
 } from "./lib/acl4ssr";
 import { buildRenderContext, buildSingBoxConfig } from "./lib/config";
+import {
+  listSkeletonFeatureSummaries,
+  parseSkeletonQuery,
+  serializeSkeletonFlags,
+  type SkeletonBuildFlags,
+} from "./lib/skeleton-presets";
 import { AppError, toErrorResponseBody } from "./lib/errors";
 import { fetchText } from "./lib/http";
 import { getVersionChannel, listProfiles, normalizeDevice, resolveProfile } from "./lib/profiles";
@@ -474,6 +480,7 @@ async function renderSingBoxConfig(
   profile: ReturnType<typeof resolveProfile>,
   outbounds: ReturnType<typeof dedupeAndNormalizeOutbounds>,
   templateResult: Awaited<ReturnType<typeof resolveTemplate>>,
+  skeletonFlags: SkeletonBuildFlags,
 ): Promise<JsonObject> {
   const ua = env.DEFAULT_USER_AGENT ?? "sing-box";
   const loadRule = (ruleUrl: string) => fetchText(ruleUrl, ua);
@@ -482,8 +489,9 @@ async function renderSingBoxConfig(
     try {
       const aclConfig = await fetchText(templateResult.builtinTemplate.acl4ssr_config_url, ua);
       if (isAcl4ssrConfig(aclConfig)) {
-        return (await buildSingBoxConfigFromAcl4ssr(profile, outbounds, aclConfig, loadRule))
-          .config;
+        return (
+          await buildSingBoxConfigFromAcl4ssr(profile, outbounds, aclConfig, loadRule, skeletonFlags)
+        ).config;
       }
     } catch {
       /* fall through */
@@ -492,8 +500,15 @@ async function renderSingBoxConfig(
 
   if (templateResult.template && isAcl4ssrConfig(templateResult.template)) {
     try {
-      return (await buildSingBoxConfigFromAcl4ssr(profile, outbounds, templateResult.template, loadRule))
-        .config;
+      return (
+        await buildSingBoxConfigFromAcl4ssr(
+          profile,
+          outbounds,
+          templateResult.template,
+          loadRule,
+          skeletonFlags,
+        )
+      ).config;
     } catch {
       /* fall through */
     }
@@ -503,7 +518,9 @@ async function renderSingBoxConfig(
     try {
       const aclConfig = await fetchText(ACL4SSR_DEFAULT_ONLINE_INI_URL, ua);
       if (isAcl4ssrConfig(aclConfig)) {
-        return (await buildSingBoxConfigFromAcl4ssr(profile, outbounds, aclConfig, loadRule)).config;
+        return (
+          await buildSingBoxConfigFromAcl4ssr(profile, outbounds, aclConfig, loadRule, skeletonFlags)
+        ).config;
       }
     } catch {
       /* fall through */
@@ -514,14 +531,17 @@ async function renderSingBoxConfig(
     if (templateResult.builtinTemplate?.acl4ssr_config_url) {
       return renderTemplate(
         templateResult.builtinTemplate.fallback_template_text,
-        buildRenderContext(profile, outbounds),
+        buildRenderContext(profile, outbounds, skeletonFlags),
       );
     }
 
-    return renderTemplate(templateResult.template, buildRenderContext(profile, outbounds));
+    return renderTemplate(
+      templateResult.template,
+      buildRenderContext(profile, outbounds, skeletonFlags),
+    );
   }
 
-  return buildSingBoxConfig(profile, outbounds);
+  return buildSingBoxConfig(profile, outbounds, skeletonFlags);
 }
 
 function buildSourceDebugEntries(
@@ -613,6 +633,8 @@ async function analyzeConversion(
   payloadResult: Awaited<ReturnType<typeof resolvePayloads>>;
   debugEntries: SourceDebugEntry[];
   explain: ConversionExplain;
+  skeletonId: string;
+  skeletonFlags: SkeletonBuildFlags;
 }> {
   const url = new URL(request.url);
   const requestedDevice = url.searchParams.get("device") ?? env.DEFAULT_DEVICE ?? "openwrt";
@@ -629,6 +651,20 @@ async function analyzeConversion(
         device: requestedDevice,
         version: requestedVersion,
       },
+    });
+  }
+
+  let skeletonFlags: SkeletonBuildFlags;
+  let skeletonId: string;
+  try {
+    skeletonFlags = parseSkeletonQuery(url.searchParams.get("skeleton"));
+    skeletonId = serializeSkeletonFlags(skeletonFlags);
+  } catch (error) {
+    throw new AppError({
+      stage: "template",
+      code: "INVALID_SKELETON",
+      status: 400,
+      message: error instanceof Error ? error.message : "skeleton 参数无效",
     });
   }
 
@@ -678,6 +714,7 @@ async function analyzeConversion(
       device: profile.device,
       channel: profile.channel,
     },
+    skeleton_id: skeletonId,
     output_format: outputFormat,
     template: {
       mode: summarizeTemplateMode(templateResult),
@@ -716,6 +753,8 @@ async function analyzeConversion(
     payloadResult,
     debugEntries,
     explain,
+    skeletonId,
+    skeletonFlags,
   };
 }
 
@@ -737,7 +776,10 @@ async function handleConvert(request: Request, env: WorkerEnv): Promise<Response
     supportedClashNodes,
     templateResult,
     payloadResult,
+    skeletonId,
+    skeletonFlags,
   } = analysis;
+  const skeletonHeaders = { "x-skeleton-id": skeletonId };
   const hasRemoteTemplate = summarizeTemplateMode(templateResult) === "remote";
   const resultCacheEnabled =
     (outputFormat === "sing-box" && !hasRemoteTemplate) ||
@@ -786,6 +828,7 @@ async function handleConvert(request: Request, env: WorkerEnv): Promise<Response
             "x-source-succeeded": String(payloadResult.sourceStats.succeeded),
             "x-source-failed": String(payloadResult.sourceStats.failed),
             "x-source-mode": payloadResult.sourceStats.mode,
+            ...skeletonHeaders,
           }),
         });
       }
@@ -797,6 +840,7 @@ async function handleConvert(request: Request, env: WorkerEnv): Promise<Response
           "x-profile-id": profile.id,
           "x-node-count": String(filteredOutbounds.length),
           "x-output-format": outputFormat,
+          ...skeletonHeaders,
           "x-cache-result": "hit",
           "x-cache-subscription": payloadResult.cacheState,
           "x-cache-template": templateResult.cacheState,
@@ -824,6 +868,7 @@ async function handleConvert(request: Request, env: WorkerEnv): Promise<Response
       "x-source-succeeded": String(payloadResult.sourceStats.succeeded),
       "x-source-failed": String(payloadResult.sourceStats.failed),
       "x-source-mode": payloadResult.sourceStats.mode,
+      ...skeletonHeaders,
     });
 
     if (outputFormat === "clash-provider") {
@@ -873,7 +918,12 @@ async function handleConvert(request: Request, env: WorkerEnv): Promise<Response
     let clashLayout: "acl4ssr-ini" | "minimal" = "minimal";
     const aclIni = await tryGetAclIniForClash();
     if (aclIni) {
-      const { yaml } = await buildClashYamlFromAcl4ssrIni(supportedClashNodes, aclIni, loadRuleList);
+      const { yaml } = await buildClashYamlFromAcl4ssrIni(
+        supportedClashNodes,
+        aclIni,
+        loadRuleList,
+        skeletonFlags,
+      );
       body = yaml;
       clashLayout = "acl4ssr-ini";
     } else {
@@ -896,7 +946,7 @@ async function handleConvert(request: Request, env: WorkerEnv): Promise<Response
             "内置 ACL 模板 .ini 拉取失败或正文无法识别，无法生成 OpenClash 配置；请稍后重试或使用 template_url 指向可用的 ACL4SSR 在线 ini。",
         });
       }
-      body = buildClashConfigDocument(filteredOutbounds);
+      body = buildClashConfigDocument(filteredOutbounds, skeletonFlags);
     }
 
     if (resultCacheKey && !hasRemoteTemplate) {
@@ -927,7 +977,29 @@ async function handleConvert(request: Request, env: WorkerEnv): Promise<Response
     profile,
     filteredOutbounds,
     templateResult,
+    skeletonFlags,
   );
+
+  // 面板用 Clash API：允许通过 password 传入 secret（尤其是开放到局域网时，必须设置 secret）。
+  if (skeletonFlags.clashApi) {
+    const apiSecret = (url.searchParams.get("password") ?? "").trim();
+    if (skeletonFlags.clashApiLan && !apiSecret) {
+      throw new AppError({
+        stage: "output",
+        code: "CLASH_API_SECRET_REQUIRED",
+        status: 400,
+        message: "已启用「面板 API 开放到局域网」，必须提供访问密码（将作为面板 API 的 secret）。",
+      });
+    }
+    if (apiSecret) {
+      const exp = (config.experimental ?? {}) as JsonObject;
+      const clashApi = (exp.clash_api ?? {}) as JsonObject;
+      clashApi.secret = apiSecret;
+      exp.clash_api = clashApi;
+      config.experimental = exp;
+    }
+  }
+
   const body = JSON.stringify(config, null, 2);
 
   if (resultCacheKey && !hasRemoteTemplate) {
@@ -955,6 +1027,7 @@ async function handleConvert(request: Request, env: WorkerEnv): Promise<Response
       "x-source-succeeded": String(payloadResult.sourceStats.succeeded),
       "x-source-failed": String(payloadResult.sourceStats.failed),
       "x-source-mode": payloadResult.sourceStats.mode,
+      ...skeletonHeaders,
     }),
   });
 }
@@ -978,6 +1051,7 @@ function handleProfiles(env: WorkerEnv): Response {
         recommended_template: defaultRecommendation?.primary_template_id ?? null,
       },
       profiles: listProfiles(),
+      skeletons: listSkeletonFeatureSummaries(),
       builtin_templates: listBuiltinTemplateSummaries({
         currentDevice: defaultProfile.device,
         currentChannel: defaultProfile.channel,
@@ -1101,6 +1175,7 @@ async function handleValidate(request: Request, env: WorkerEnv): Promise<Respons
       ok: true,
       valid: true,
       profile: analysis.explain.profile,
+      skeleton_id: analysis.explain.skeleton_id,
       output_format: analysis.explain.output_format,
       template: analysis.explain.template,
       sources: {
@@ -1146,12 +1221,13 @@ async function handleExplain(request: Request, env: WorkerEnv): Promise<Response
           analysis.profile,
           analysis.filteredOutbounds,
           analysis.templateResult,
+          analysis.skeletonFlags,
         );
       } catch (error) {
         throw error;
       }
     } else if (analysis.outputFormat === "clash") {
-      rendered = buildClashConfigDocument(analysis.filteredOutbounds);
+      rendered = buildClashConfigDocument(analysis.filteredOutbounds, analysis.skeletonFlags);
     } else {
       rendered = buildClashProviderDocument(analysis.filteredOutbounds);
     }
@@ -1204,8 +1280,8 @@ function handleUiVersion(env: WorkerEnv): Response {
   return jsonResponse(
     {
       ok: true,
-      ui: "v3.4",
-      note: "与 pages-static/console.html 页脚「UI v3.4」一致；若不一致说明缓存或命中旧部署。",
+      ui: "v4.3",
+      note: "与 pages-static/console.html 页脚「UI v4.3」一致；若不一致说明缓存或命中旧部署。",
     },
     env,
   );

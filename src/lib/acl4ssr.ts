@@ -1,12 +1,9 @@
 import YAML from "yaml";
 
-import {
-  buildDns,
-  buildExperimental,
-  buildMixedInbound,
-  buildTunInbound,
-} from "./config";
-import { toClashProxy } from "./clash";
+import { buildDns, buildExperimental, buildProfileInbounds } from "./config";
+import type { SkeletonBuildFlags } from "./skeleton-presets";
+import { DEFAULT_SKELETON_FLAGS, buildSkeletonRoutePrepend } from "./skeleton-presets";
+import { mergeClashGlobalSkeleton, toClashProxy } from "./clash";
 import type {
   DeviceProfile,
   JsonObject,
@@ -178,6 +175,7 @@ export async function buildSingBoxConfigFromAcl4ssr(
   nodes: SingBoxOutbound[],
   aclConfig: string,
   loadRuleList: (url: string) => Promise<string>,
+  skeletonFlags: SkeletonBuildFlags = DEFAULT_SKELETON_FLAGS,
 ): Promise<{
   config: JsonObject;
   summary: JsonObject;
@@ -236,10 +234,7 @@ export async function buildSingBoxConfigFromAcl4ssr(
     }
   }
 
-  const inbounds: JsonObject[] = [buildTunInbound(profile)];
-  if (profile.device === "pc") {
-    inbounds.push(buildMixedInbound(profile));
-  }
+  const inbounds = buildProfileInbounds(profile, skeletonFlags);
 
   const outbounds: JsonObject[] = [
     ...groupOutbounds,
@@ -251,24 +246,25 @@ export async function buildSingBoxConfigFromAcl4ssr(
   const route: JsonObject = {
     auto_detect_interface: true,
     final: finalOutbound,
-    rules: routeRules,
+    rules: [...buildSkeletonRoutePrepend(skeletonFlags, profile), ...routeRules],
   };
 
   if (profile.channel === "modern") {
     route.default_domain_resolver = "dns-remote";
   }
 
+  const logLevel = skeletonFlags.logDebug ? "debug" : "info";
   return {
     config: {
       log: {
-        level: "info",
+        level: logLevel,
         timestamp: true,
       },
-      dns: buildDns(profile),
+      dns: buildDns(profile, skeletonFlags),
       inbounds,
       outbounds,
       route,
-      experimental: buildExperimental(profile),
+      experimental: buildExperimental(profile, skeletonFlags),
     },
     summary: {
       acl4ssr: true,
@@ -404,6 +400,7 @@ export async function buildClashYamlFromAcl4ssrIni(
   nodes: SingBoxOutbound[],
   aclIni: string,
   loadRuleList: (url: string) => Promise<string>,
+  skeletonFlags: SkeletonBuildFlags = DEFAULT_SKELETON_FLAGS,
 ): Promise<{ yaml: string; warnings: string[] }> {
   const clashProxies = nodes
     .map((n) => toClashProxy(n))
@@ -470,6 +467,8 @@ export async function buildClashYamlFromAcl4ssrIni(
     "proxy-groups": proxyGroups,
     rules,
   };
+
+  mergeClashGlobalSkeleton(doc, skeletonFlags);
 
   return { yaml: YAML.stringify(doc), warnings };
 }

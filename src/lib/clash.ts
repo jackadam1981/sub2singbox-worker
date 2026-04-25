@@ -1,5 +1,7 @@
 import YAML from "yaml";
 
+import type { SkeletonBuildFlags } from "./skeleton-presets";
+import { DEFAULT_SKELETON_FLAGS } from "./skeleton-presets";
 import type { JsonObject, SingBoxOutbound } from "./types";
 
 type ClashProxy = JsonObject & {
@@ -381,7 +383,56 @@ export function buildClashProviderDocument(outbounds: SingBoxOutbound[]): string
   return YAML.stringify({ proxies });
 }
 
-export function buildClashConfigDocument(outbounds: SingBoxOutbound[]): string {
+/** 将骨架功能合并进 Clash / Clash Meta 顶层文档（与 proxies / rules 正交）。 */
+export function mergeClashGlobalSkeleton(doc: JsonObject, flags: SkeletonBuildFlags = DEFAULT_SKELETON_FLAGS): void {
+  if (flags.logDebug) {
+    doc["log-level"] = "debug";
+  }
+
+  const needTun = flags.clashTun || flags.dnsAntiLeak;
+  if (needTun) {
+    const tun: JsonObject = {
+      enable: true,
+      stack: "mixed",
+      "auto-route": true,
+      "auto-detect-interface": true,
+      "strict-route": true,
+    };
+    if (flags.dnsAntiLeak) {
+      tun["dns-hijack"] = ["0.0.0.0:53", "tcp://0.0.0.0:53", "any:53", "tcp://any:53"];
+    }
+    doc.tun = tun;
+  }
+
+  if (flags.clashFakeIpDns) {
+    doc.dns = {
+      enable: true,
+      ipv6: false,
+      "enhanced-mode": "fake-ip",
+      "fake-ip-range": "198.18.0.0/16",
+      nameserver: ["https://1.1.1.1/dns-query", "https://dns.google/dns-query"],
+    };
+  }
+
+  if (flags.clashSniffer) {
+    doc.sniffer = {
+      enable: true,
+      "force-dns-mapping": true,
+      "parse-pure-ip": false,
+      "override-destination": false,
+      sniff: {
+        HTTP: { ports: [80, 8080, 8888] },
+        TLS: { ports: [443, 8443] },
+        QUIC: { ports: [443] },
+      },
+    };
+  }
+}
+
+export function buildClashConfigDocument(
+  outbounds: SingBoxOutbound[],
+  flags: SkeletonBuildFlags = DEFAULT_SKELETON_FLAGS,
+): string {
   const proxies = outbounds
     .map((outbound) => toClashProxy(outbound))
     .filter((proxy): proxy is ClashProxy => proxy !== null);
@@ -389,7 +440,7 @@ export function buildClashConfigDocument(outbounds: SingBoxOutbound[]): string {
   const proxyNames = proxies.map((proxy) => proxy.name);
   const autoTargets = proxyNames.length > 0 ? proxyNames : ["DIRECT"];
 
-  return YAML.stringify({
+  const doc: JsonObject = {
     "mixed-port": 7890,
     "allow-lan": false,
     mode: "rule",
@@ -413,5 +464,7 @@ export function buildClashConfigDocument(outbounds: SingBoxOutbound[]): string {
       },
     ],
     rules: ["MATCH,Proxy"],
-  });
+  };
+  mergeClashGlobalSkeleton(doc, flags);
+  return YAML.stringify(doc);
 }

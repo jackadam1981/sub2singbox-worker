@@ -6,6 +6,7 @@ import {
   buildClashProviderDocument,
   toClashProxy,
 } from "../src/lib/clash";
+import { parseSkeletonQuery } from "../src/lib/skeleton-presets";
 
 describe("clash output", () => {
   it("converts sing-box outbound to clash proxy", () => {
@@ -83,5 +84,28 @@ describe("clash output", () => {
       name: "HTTP-Node",
       type: "http",
     });
+  });
+
+  it("merges Clash Meta skeleton into full config", () => {
+    const yamlText = buildClashConfigDocument(
+      [
+        {
+          type: "shadowsocks",
+          tag: "HK-SS",
+          server: "1.2.3.4",
+          server_port: 443,
+          method: "aes-256-gcm",
+          password: "pass",
+        },
+      ],
+      parseSkeletonQuery("clash_tun+dns_anti_leak+clash_sniffer"),
+    );
+    const doc = YAML.parse(yamlText) as {
+      tun: { enable: boolean; "dns-hijack"?: string[] };
+      sniffer: { enable: boolean };
+    };
+    expect(doc.tun.enable).toBe(true);
+    expect(Array.isArray(doc.tun["dns-hijack"])).toBe(true);
+    expect(doc.sniffer.enable).toBe(true);
   });
 });
